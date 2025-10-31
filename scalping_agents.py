@@ -16,6 +16,7 @@ import json
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from scalping_config import ScalpingConfig
+from scalping_indicators import ScalpingIndicators
 
 
 @dataclass
@@ -38,7 +39,8 @@ class ScalpSetup:
 class FastMomentumAgent:
     """
     Analyzes momentum on 1-minute timeframe for scalping opportunities.
-    Focuses on: EMA breakouts, volume spikes, momentum shifts.
+    OPTIMIZED: Uses fast EMA ribbon (3,6,12), VWAP, Donchian, RSI(7), ADX(7).
+    Based on GPT-5 analysis + academic research.
     """
 
     def __init__(self, llm: ChatOpenAI):
@@ -47,7 +49,7 @@ class FastMomentumAgent:
 
     def analyze(self, market_data: Dict) -> Dict:
         """
-        Quick momentum analysis for scalping entry.
+        Quick momentum analysis for scalping entry using optimized indicators.
 
         Args:
             market_data: Dict with price, indicators, volume, etc.
@@ -59,46 +61,82 @@ class FastMomentumAgent:
         current_price = market_data['current_price']
         indicators = market_data['indicators']
 
-        # Extract key indicators
-        ema_5 = indicators.get('ema_5', current_price)
-        ema_10 = indicators.get('ema_10', current_price)
-        ema_20 = indicators.get('ema_20', current_price)
-        rsi = indicators.get('rsi_14', 50)
-        volume = indicators.get('volume', 0)
-        volume_avg = indicators.get('volume_avg', volume)
-        bb_upper = indicators.get('bb_upper', current_price * 1.001)
-        bb_lower = indicators.get('bb_lower', current_price * 0.999)
-        bb_middle = indicators.get('bb_middle', current_price)
+        # Extract OPTIMIZED indicators (EMA 3,6,12 NOT 5,10,20)
+        ema_3 = indicators.get('ema_3', current_price)
+        ema_6 = indicators.get('ema_6', current_price)
+        ema_12 = indicators.get('ema_12', current_price)
+        ema_ribbon_bullish = indicators.get('ema_ribbon_bullish', False)
+        ema_ribbon_bearish = indicators.get('ema_ribbon_bearish', False)
 
-        # Volume analysis
-        volume_spike = volume / volume_avg if volume_avg > 0 else 1.0
-        volume_signal = "STRONG" if volume_spike > 2.0 else "NORMAL" if volume_spike > 1.2 else "WEAK"
+        # VWAP (institutional anchor)
+        vwap = indicators.get('vwap', current_price)
+        above_vwap = indicators.get('above_vwap', False)
 
-        # EMA trend
-        ema_trend = "BULLISH" if current_price > ema_5 > ema_10 > ema_20 else \
-                    "BEARISH" if current_price < ema_5 < ema_10 < ema_20 else \
-                    "NEUTRAL"
+        # Donchian breakout
+        donchian_upper = indicators.get('donchian_upper', current_price * 1.001)
+        donchian_lower = indicators.get('donchian_lower', current_price * 0.999)
+        donchian_breakout_long = indicators.get('donchian_breakout_long', False)
+        donchian_breakout_short = indicators.get('donchian_breakout_short', False)
 
-        # RSI momentum
-        rsi_signal = "OVERSOLD_RECOVERY" if 30 < rsi < 50 else \
-                     "OVERBOUGHT_PULLBACK" if 50 < rsi < 70 else \
-                     "EXTREME_OVERSOLD" if rsi < 30 else \
-                     "EXTREME_OVERBOUGHT" if rsi > 70 else "NEUTRAL"
+        # RSI(7) NOT RSI(14)
+        rsi = indicators.get('rsi', 50)
+        rsi_bullish = indicators.get('rsi_bullish', False)  # RSI>55 with rising slope
+        rsi_bearish = indicators.get('rsi_bearish', False)  # RSI<45 with falling slope
 
-        # Bollinger Band position
-        bb_position = "ABOVE_UPPER" if current_price > bb_upper else \
-                      "BELOW_LOWER" if current_price < bb_lower else \
-                      "INSIDE_BANDS"
+        # ADX(7) trend strength
+        adx = indicators.get('adx', 0)
+        adx_trending = indicators.get('adx_trending', False)  # ADX>18 and rising
+        di_bullish = indicators.get('di_bullish', False)
+        di_bearish = indicators.get('di_bearish', False)
+
+        # Volume
+        volume_spike = indicators.get('volume_spike', False)
+
+        # Bollinger Squeeze
+        squeeze_on = indicators.get('squeeze_on', False)
+        squeeze_off = indicators.get('squeeze_off', False)
+
+        # SuperTrend direction
+        supertrend_direction = indicators.get('supertrend_direction', 0)
+
+        # Determine trend direction
+        if ema_ribbon_bullish and above_vwap:
+            ema_trend = "BULLISH"
+        elif ema_ribbon_bearish and not above_vwap:
+            ema_trend = "BEARISH"
+        else:
+            ema_trend = "NEUTRAL"
+
+        # RSI momentum (using RSI 7, not 14)
+        if rsi_bullish:
+            rsi_signal = "BULLISH_MOMENTUM"
+        elif rsi_bearish:
+            rsi_signal = "BEARISH_MOMENTUM"
+        elif rsi < 30:
+            rsi_signal = "OVERSOLD"
+        elif rsi > 70:
+            rsi_signal = "OVERBOUGHT"
+        else:
+            rsi_signal = "NEUTRAL"
+
+        # VWAP position
+        vwap_position = "ABOVE" if above_vwap else "BELOW"
+        vwap_bias = "LONG_BIAS" if above_vwap else "SHORT_BIAS"
 
         prompt = f"""You are a Fast Momentum Scalping Expert analyzing {pair} on 1-minute chart for 10-20 minute trades.
+Uses OPTIMIZED indicators: Fast EMA (3,6,12), VWAP, Donchian, RSI(7), ADX(7).
 
 CURRENT PRICE: {current_price:.5f}
 
-MOMENTUM INDICATORS:
-- EMA Trend: {ema_trend} (5: {ema_5:.5f}, 10: {ema_10:.5f}, 20: {ema_20:.5f})
-- RSI: {rsi:.1f} ({rsi_signal})
-- Volume: {volume_signal} (Spike: {volume_spike:.1f}x average)
-- Bollinger Bands: {bb_position}
+OPTIMIZED MOMENTUM INDICATORS:
+- EMA Ribbon (3,6,12): {ema_trend} (3: {ema_3:.5f}, 6: {ema_6:.5f}, 12: {ema_12:.5f})
+- VWAP: {vwap:.5f} → Price is {vwap_position} VWAP ({vwap_bias})
+- Donchian Breakout: {"LONG" if donchian_breakout_long else "SHORT" if donchian_breakout_short else "NONE"}
+- RSI(7): {rsi:.1f} ({rsi_signal})
+- ADX(7): {adx:.1f} {"TRENDING" if adx_trending else "CHOPPY"} (DI: {"+" if di_bullish else "-" if di_bearish else "neutral"})
+- Volume Spike: {"YES" if volume_spike else "NO"}
+- BB Squeeze: {"ON (compressed)" if squeeze_on else "OFF (released)" if squeeze_off else "normal"}
+- SuperTrend: {"BULLISH" if supertrend_direction == 1 else "BEARISH" if supertrend_direction == -1 else "neutral"}
 
 SCALPING RULES:
 - Only trade HIGH PROBABILITY setups with 2+ confirmations

@@ -90,43 +90,98 @@ class ScalpingConfig:
     PAUSE_AFTER_LOSSES_MINUTES: int = 30
 
     # ============================================================================
-    # INDICATORS (Simplified for Scalping)
+    # INDICATORS (Optimized for 1-Minute Scalping)
     # ============================================================================
 
-    # Keep only fast, responsive indicators
+    # Indicators based on GPT-5 analysis and academic research
+    # Optimized for 10-20 minute holds on 1-minute charts
+
     ENABLED_INDICATORS: List[str] = [
-        "ema_5",          # 5 EMA - fast trend
-        "ema_10",         # 10 EMA - medium trend
-        "ema_20",         # 20 EMA - slow trend
-        "rsi_14",         # RSI for momentum
-        "bollinger_bands", # Volatility + mean reversion
-        "volume",         # Volume spikes
-        "support_resistance",  # Key levels
+        # Trend/Bias (Fast EMA Ribbon)
+        "ema_3",          # Ultra-fast trend (replaces ema_5)
+        "ema_6",          # Fast trend (replaces ema_10)
+        "ema_12",         # Medium trend (replaces ema_20)
+
+        # Institutional Anchor
+        "vwap",           # Session VWAP (critical for intraday)
+        "vwap_bands",     # ±1σ and ±2σ deviation bands
+
+        # Breakout Structure
+        "donchian_15",    # Donchian Channel (micro-range breakout)
+        "bb_squeeze",     # Bollinger vs Keltner squeeze detection
+
+        # Momentum/Strength
+        "rsi_7",          # Fast RSI for scalping (NOT 14)
+        "adx_7",          # Trend strength filter (fast version)
+
+        # Volatility/Risk
+        "atr_5",          # ATR for stop/sizing validation
+        "supertrend",     # ATR-based trailing stop
+
+        # Volume
+        "volume",         # Tick volume confirmation
+        "volume_spike",   # 2x average volume trigger
     ]
+
+    # Indicator Parameters (1-minute optimized)
+    INDICATOR_PARAMS: Dict[str, Dict[str, any]] = {
+        "ema_ribbon": {"periods": [3, 6, 12]},  # Fast ribbon
+        "rsi": {"period": 7, "overbought": 70, "oversold": 30, "momentum_level": 50},
+        "adx": {"period": 7, "threshold": 18},  # >18 and rising = trend
+        "vwap": {"session_start_hour": 8},  # Anchor at 08:00 GMT (London)
+        "vwap_bands": {"std_devs": [1.0, 2.0]},  # ±1σ, ±2σ
+        "donchian": {"period": 15},  # 15-bar high/low (approx hold horizon)
+        "bb_squeeze": {"bb_period": 20, "bb_std": 2.0, "kc_period": 20, "kc_mult": 1.5},
+        "supertrend": {"atr_period": 7, "multiplier": 1.5},
+        "atr": {"period": 5},
+        "volume_spike": {"multiplier": 2.0},  # 2x average volume
+    }
 
     # Remove slow/lagging indicators for scalping
     DISABLED_INDICATORS: List[str] = [
-        "ichimoku",       # Too slow
-        "adx",            # Lagging
+        "macd",           # Too slow for 1-minute (12,26,9)
+        "sma_50",         # Irrelevant for 10-20 min trades
+        "sma_200",        # Irrelevant for 10-20 min trades
+        "rsi_14",         # Too slow, use RSI(7) instead
+        "ema_20",         # Too slow, use EMA(12) instead
+        "ichimoku",       # Too slow and complex
         "divergence",     # Takes too long to develop
-        "fvg",            # Macro structure
+        "fvg",            # Macro structure, not scalping
         "vpvr",           # Too complex for 10-min trades
+        "bollinger_mean_reversion",  # Counter-trend is risky in momentum scalping
     ]
 
     # ============================================================================
-    # ENTRY SIGNALS (Fast Momentum Triggers)
+    # ENTRY SIGNALS (Fast Momentum Triggers - Optimized)
     # ============================================================================
 
+    # Entry logic based on GPT-5 + research recommendations
     ENTRY_TRIGGERS: Dict[str, bool] = {
-        "ema_breakout": True,           # Price breaks above/below 5 EMA
+        # Trend confirmation (primary filter)
+        "ema_ribbon_aligned": True,     # EMA 3>6>12 (long) or 3<6<12 (short)
+        "above_vwap": True,             # Price above VWAP (long) / below (short)
+
+        # Breakout triggers
+        "donchian_breakout": True,      # Close outside Donchian channel
+        "bb_squeeze_release": True,     # Squeeze → expansion
+
+        # Momentum confirmation
+        "rsi_momentum": True,           # RSI(7) > 55 (long) or < 45 (short)
+        "adx_trending": True,           # ADX(7) > 18 and rising
+
+        # Volume confirmation
         "volume_spike": True,           # 2x average volume
-        "support_bounce": True,         # Touch + bounce off S/R
-        "rsi_momentum": True,           # RSI 30→50 (oversold recovery)
-        "bb_squeeze_breakout": True,   # Bollinger squeeze then breakout
+
+        # Optional: Quick pullback entries
+        "ema_pullback": False,          # Pullback to EMA 6 in trend (lower priority)
     }
 
+    # Entry template (all must be true for TIER 1):
+    # LONG: Price > VWAP, EMA 3>6>12 (rising), ADX>18, RSI>55, Donchian breakout, Volume spike
+    # SHORT: Reverse conditions
+
     # Minimum confirmations required
-    MIN_ENTRY_CONFIRMATIONS: int = 2  # Need 2+ signals to enter
+    MIN_ENTRY_CONFIRMATIONS: int = 4  # Need 4+ signals for entry (increased from 2)
 
     # ============================================================================
     # EXIT RULES (Critical for Scalping)
