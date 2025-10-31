@@ -1,0 +1,64 @@
+
+═══════════════════════════════════════════════════════════════════════════════
+                        ⏰ QUICK TIMEFRAME GUIDE
+═══════════════════════════════════════════════════════════════════════════════
+
+CURRENT SYSTEM → SWING TRADING (DAYS TO WEEKS)
+─────────────────────────────────────────────────────────────────────────────
+
+Your 18 "HOLD" recommendations mean:
+  → Hold these positions for 3-30 DAYS
+  → Check again in a week or two
+  → NOT for day trading
+
+Data Used:
+  • Daily price candles
+  • 20/50/200 day moving averages
+  • Company fundamentals
+  • Daily news sentiment
+
+═══════════════════════════════════════════════════════════════════════════════
+
+INTRADAY SYSTEM → DAY TRADING (MINUTES TO HOURS)
+─────────────────────────────────────────────────────────────────────────────
+
+New system would give:
+  → Entry/exit within same day
+  → Signals every 5-15 minutes
+  → Close positions before market close
+  → Focus on price action
+
+Data Used:
+  • 1m/5m/15m/1h candles
+  • Intraday momentum
+  • VWAP, volume spikes
+  • Support/resistance levels
+
+═══════════════════════════════════════════════════════════════════════════════
+
+RECOMMENDED: HYBRID APPROACH
+─────────────────────────────────────────────────────────────────────────────
+
+Morning: Run daily analysis
+  python batch_analyzer.py
+  → Get swing trade setups (all 18 stocks)
+  → Identify 3-5 best opportunities
+
+During Day: Monitor intraday
+  python intraday_analyzer.py --symbols RKLB,NVDA,QMCO
+  → Get minute-level signals (top 3-5 stocks)
+  → Execute day trades
+
+═══════════════════════════════════════════════════════════════════════════════
+
+TELL ME YOUR CHOICE:
+
+1. Option: A (separate), B (unified), or C (dashboard)?
+2. Interval: 1m, 5m, 15m, or 1h?
+3. Stocks: Top 3, 5, or all 18?
+4. Data: Real-time or 15-min delayed?
+
+I'll implement it for you!
+
+═══════════════════════════════════════════════════════════════════════════════
+

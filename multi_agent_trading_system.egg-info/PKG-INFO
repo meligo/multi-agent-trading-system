@@ -1,0 +1,309 @@
+Metadata-Version: 2.4
+Name: multi-agent-trading-system
+Version: 2.0.0
+Summary: Production-ready multi-agent trading system powered by LLMs
+Author: Trading System Team
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Financial and Insurance Industry
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Dynamic: license-file
+
+# Multi-Agent Trading System v2.0 🚀
+
+A production-ready AI-powered trading system where multiple specialized agents collaborate to analyze stocks and make informed trading decisions.
+
+## ✨ Features
+
+- **4 Analyst Agents**: Market, Social, News, and Fundamentals analysis
+- **Bull vs Bear Debate**: Adversarial debate for balanced perspective
+- **Risk Management Team**: Three perspectives (Risky, Safe, Neutral)
+- **Portfolio Manager**: Final decision-maker
+- **Long-term Memory**: Agents learn from past decisions
+- **Real-time Data**: Live market data, news, and sentiment
+
+## 🎯 What It Does
+
+The system analyzes a stock through multiple specialized AI agents:
+
+1. **Analysts gather data** from various sources (market data, news, social media, fundamentals)
+2. **Bull and Bear debate** the investment opportunity
+3. **Research Manager** synthesizes a balanced plan
+4. **Trader** creates an actionable proposal
+5. **Risk Team** evaluates the risks from multiple perspectives
+6. **Portfolio Manager** makes the final decision: BUY, SELL, or HOLD
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Python 3.11+
+- API Keys (see below)
+
+### 1. Get API Keys
+
+You need these free API keys:
+
+- **OpenAI**: https://platform.openai.com/api-keys
+- **Finnhub**: https://finnhub.io/register
+- **Tavily**: https://tavily.com/
+- **LangSmith** (optional): https://smith.langchain.com/
+
+### 2. Installation
+
+```bash
+# Clone the repository
+git clone <your-repo-url>
+cd multi-agent-trading-system
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Set up environment variables
+cp .env .env.local
+# Edit .env and add your API keys
+```
+
+### 3. Run Analysis
+
+```bash
+# Analyze a stock (e.g., NVIDIA)
+python main.py NVDA
+
+# Analyze with specific date
+python main.py NVDA --date 2024-01-15
+
+# Debug mode
+python main.py NVDA --debug
+
+# Show configuration
+python main.py NVDA --show-config
+```
+
+## 🐳 Docker Usage
+
+```bash
+# Build and run with Docker
+docker build -t trading-system .
+docker run -e OPENAI_API_KEY=your_key \
+           -e FINNHUB_API_KEY=your_key \
+           -e TAVILY_API_KEY=your_key \
+           trading-system NVDA
+
+# Or use docker-compose
+docker-compose up
+```
+
+## 📊 Example Output
+
+```
+Analyzing NVDA for 2024-01-15
+
+✓ Analysis complete (23 steps)
+
+================================================================================
+TRADING ANALYSIS RESULTS
+================================================================================
+
+Ticker: NVDA
+Date: 2024-01-15
+Signal: BUY
+
+Market Analysis:
+NVDA shows strong technical momentum with price trading above both 50-day and
+200-day moving averages. MACD indicates bullish momentum, RSI at 68 suggests
+strong buying pressure without being overbought...
+
+Investment Plan:
+Based on comprehensive analysis, recommend a scaled entry approach. Initiate
+50% position at current levels, with additional 50% on any pullback to 50-day SMA.
+Stop-loss below 200-day SMA for risk management...
+
+Final Decision: BUY
+The portfolio manager approves the trading plan. Strong fundamentals, positive
+technical setup, and supportive macro environment justify a long position with
+prudent risk management.
+================================================================================
+```
+
+## ⚙️ Configuration
+
+All configuration is in `config.py`:
+
+```python
+class Config:
+    # LLM Models
+    DEEP_THINKING_MODEL = "gpt-4o"      # For complex reasoning
+    QUICK_THINKING_MODEL = "gpt-4o-mini" # For fast operations
+
+    # Debate Settings
+    MAX_DEBATE_ROUNDS = 2
+    MAX_RISK_DISCUSS_ROUNDS = 1
+
+    # Memory Settings
+    MAX_MEMORIES = 100
+    SIMILARITY_THRESHOLD = 0.7
+
+    # ... and more
+```
+
+## 🏗️ Architecture
+
+```
+main.py (single file, ~800 lines)
+├── Tools (data fetching)
+│   ├── YFinance (market data)
+│   ├── Technical Indicators
+│   ├── Finnhub (news)
+│   └── Tavily (web search)
+├── Analyst Team
+│   ├── Market Analyst
+│   ├── Social Analyst
+│   ├── News Analyst
+│   └── Fundamentals Analyst
+├── Research Team
+│   ├── Bull Researcher
+│   ├── Bear Researcher
+│   └── Research Manager
+├── Trading Team
+│   ├── Trader
+│   ├── Risky Risk Analyst
+│   ├── Safe Risk Analyst
+│   ├── Neutral Risk Analyst
+│   └── Portfolio Manager
+└── Memory System (ChromaDB)
+```
+
+## 📁 Project Structure
+
+```
+.
+├── main.py              # Single main file with everything
+├── config.py            # Single config file
+├── requirements.txt     # Python dependencies
+├── .env                # API keys (create from .env)
+├── Dockerfile          # Docker container
+├── docker-compose.yml  # Docker orchestration
+└── src/
+    └── core/
+        ├── state.py     # State definitions
+        └── memory.py    # Memory system
+```
+
+## 🔧 Advanced Usage
+
+### Custom Analysis Date Range
+
+```python
+# In main.py, modify the date calculation
+trade_date = "2024-01-15"  # Your custom date
+```
+
+### Adjust Agent Behavior
+
+Edit the system prompts in `main.py`:
+
+```python
+# Example: Make Bull more aggressive
+bull_agent = create_debate_agent(
+    quick_llm,
+    bull_memory,
+    "You are VERY bullish. Focus ONLY on upside...",  # Modified
+    "Bull",
+    is_bull=True
+)
+```
+
+### Memory Persistence
+
+Memories are automatically saved to `./memory_db/` and persist across runs.
+
+## 🔍 How It Works
+
+### 1. Data Gathering Phase
+- Agents use tools to fetch real-time data
+- ReAct loop: Reason → Act → Observe → Repeat
+
+### 2. Analysis Phase
+- Bull vs Bear debate (configurable rounds)
+- Each agent accesses long-term memory for lessons
+
+### 3. Decision Phase
+- Research Manager synthesizes debate
+- Trader creates concrete plan
+- Risk team evaluates from multiple angles
+
+### 4. Final Decision
+- Portfolio Manager weighs all inputs
+- Makes final BUY/SELL/HOLD decision
+
+### 5. Learning Phase
+- System can store outcomes and lessons
+- Future analyses retrieve relevant memories
+
+## 🎓 Research Background
+
+Based on academic research:
+
+- **TradingAgents** (arXiv:2412.20138): Multi-agent LLM framework
+- **FinCon** (arXiv:2407.06567): Manager-analyst hierarchy
+- **Supervisor Pattern**: Orchestration for complex workflows
+
+## 📈 Performance
+
+- **Speed**: ~2-5 minutes per analysis (depending on tools used)
+- **Cost**: ~$0.10-0.30 per analysis (OpenAI API costs)
+- **Accuracy**: Improved by memory and multi-agent debate
+
+## 🛠️ Troubleshooting
+
+### "Missing API key" error
+- Make sure you've set all required keys in `.env`
+- Run `python main.py NVDA --show-config` to check
+
+### "ChromaDB error"
+- Delete `./memory_db/` folder and restart
+- Ensure write permissions
+
+### "Tool execution failed"
+- Check your API rate limits
+- Verify API keys are valid
+
+### Slow execution
+- Reduce MAX_DEBATE_ROUNDS in config.py
+- Use QUICK_THINKING_MODEL for all agents
+
+## 🔮 Future Enhancements
+
+- [ ] Backtesting engine
+- [ ] Portfolio optimization
+- [ ] Real-time streaming
+- [ ] Web UI
+- [ ] Multi-stock analysis
+- [ ] Strategy comparison
+
+## 🤝 Contributing
+
+Contributions welcome! This is a simplified, production-ready version focused on ease of use.
+
+## 📝 License
+
+MIT License - see LICENSE file
+
+## 🙏 Acknowledgments
+
+- Based on LangChain/LangGraph examples
+- Inspired by TradingAgents and FinCon research
+- Original notebook implementation by the community
+
+## 📞 Support
+
+- Issues: GitHub Issues
+- Questions: GitHub Discussions
+
+---
+
+**Note**: This system is for educational and research purposes. Not financial advice. Always do your own research before making investment decisions.

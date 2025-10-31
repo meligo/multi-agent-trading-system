@@ -1,0 +1,32 @@
+# Trading System Watchlist
+# Add one stock ticker per line
+# Lines starting with # are ignored
+
+# Your Portfolio Stocks (from screenshots)
+TRVN    # Travere Therapeutics Inc
+DEFI    # Defi Development Corp
+AMMP    # Ammpower Corp
+AGFAF   # Agfa-Gevaert
+FLLCF   # Full Circle Lithium Corp
+SOLCF   # Coinshares Physical Staked Solana ETC
+CAMP    # Camp4 Therapeutics Corp
+FLPC    # Fuelpositive Corporation
+YMAX    # YieldMax MSTR Option Income Strategy ETF
+QMCO    # D-Wave Quantum Inc
+BTDRY   # Bitdeer Technologies Group
+ONDAS   # Ondas Holdings Inc
+UUUU    # Energy Fuels Inc
+RKLB    # Rocket Lab Corporation
+CORT    # Core Scientific Inc
+SRUUF   # Solid Power Inc
+SES     # SES AI Corporation
+BFARF   # Bitfarms Ltd
+
+# Additional Popular Tech Stocks (commented out - uncomment to analyze)
+# NVDA    # NVIDIA Corporation
+# AAPL    # Apple Inc
+# MSFT    # Microsoft Corporation
+# TSLA    # Tesla Inc
+# GOOGL   # Alphabet Inc
+# META    # Meta Platforms Inc
+# AMZN    # Amazon.com Inc

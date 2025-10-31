@@ -1,0 +1,10 @@
+LICENSE
+README.md
+pyproject.toml
+./src/__init__.py
+./src/main.py
+multi_agent_trading_system.egg-info/PKG-INFO
+multi_agent_trading_system.egg-info/SOURCES.txt
+multi_agent_trading_system.egg-info/dependency_links.txt
+multi_agent_trading_system.egg-info/entry_points.txt
+multi_agent_trading_system.egg-info/top_level.txt

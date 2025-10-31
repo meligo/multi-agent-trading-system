@@ -1,0 +1,80 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+chroma_db/
+memory_db/
+forex_cache.db
+ig_cache.db
+trading_data.db
+forex_data.db
+
+# Logs
+*.log
+analysis_output.log
+
+# Cache
+.cache/
+*.cache
+
+# Trading data
+paper_trading_state.json
+backup_*/
+results/
+watchlist.txt
+watchlist_demo.txt
+
+# Images and screenshots
+*.png
+*.jpg
+*.jpeg
+*.gif
+
+# CSV files with sensitive data
+ActivityHistory*.csv

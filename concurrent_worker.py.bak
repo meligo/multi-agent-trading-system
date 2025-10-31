@@ -1,0 +1,395 @@
+"""
+Concurrent Trading Worker
+
+Analyzes all currency pairs in parallel every 60 seconds.
+Saves all data (positions, signals, analysis, indicators) to SQLite database.
+"""
+
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from typing import List, Dict, Optional
+import traceback
+
+from forex_config import ForexConfig
+from forex_agents import ForexTradingSystem
+from paper_trader import PaperTrader
+from trading_database import get_database
+
+
+class ConcurrentTradingWorker:
+    """
+    Concurrent worker that analyzes all pairs in parallel.
+
+    Features:
+    - Runs every 60 seconds
+    - Parallel analysis of all pairs
+    - Saves all data to database
+    - Monitors open positions
+    - Auto-executes signals (optional)
+    """
+
+    def __init__(
+        self,
+        initial_balance: float = 50000.0,
+        auto_trading: bool = False,
+        max_workers: int = 10
+    ):
+        """
+        Initialize concurrent worker.
+
+        Args:
+            initial_balance: Starting balance
+            auto_trading: If True, auto-execute signals
+            max_workers: Max concurrent threads for analysis
+        """
+        self.trader = PaperTrader(initial_balance=initial_balance)
+        self.system = ForexTradingSystem(
+            api_key=ForexConfig.FINNHUB_API_KEY,
+            openai_api_key=ForexConfig.OPENAI_API_KEY
+        )
+        self.db = get_database()
+
+        self.auto_trading = auto_trading
+        self.max_workers = max_workers
+        self.running = False
+        self.worker_thread = None
+
+        # Load existing positions from database
+        self._load_positions_from_db()
+
+        print(f"✅ Concurrent worker initialized")
+        print(f"   Auto-trading: {'ENABLED' if auto_trading else 'DISABLED'}")
+        print(f"   Max workers: {max_workers}")
+        print(f"   Monitoring pairs: {len(ForexConfig.ALL_PAIRS)}")
+
+    def _load_positions_from_db(self):
+        """Load open positions from database."""
+        try:
+            positions = self.db.get_open_positions()
+            print(f"📂 Loaded {len(positions)} open positions from database")
+            # TODO: Reconstruct PaperPosition objects if needed
+        except Exception as e:
+            print(f"⚠️ Could not load positions: {e}")
+
+    def analyze_pair(self, pair: str) -> Dict:
+        """
+        Analyze a single pair with full agent flow.
+
+        Returns:
+            Dictionary with analysis results and any signals
+        """
+        try:
+            # Get complete agent analysis
+            details = self.system.generate_signal_with_details(pair, '5', '1')
+
+            analysis = details['analysis']
+            price_action = details['price_action']
+            momentum = details['momentum']
+            decision = details['decision']
+            signal = details['signal']
+
+            timestamp = datetime.now()
+
+            # Save technical indicators
+            self.db.save_indicators({
+                'pair': pair,
+                'timeframe': '5',
+                'indicators': analysis['indicators'],
+                'hedge_strategies': analysis.get('hedge_strategies', {}),
+                'timestamp': timestamp
+            })
+
+            # Save agent analysis
+            self.db.save_agent_analysis({
+                'pair': pair,
+                'timeframe': '5',
+                'current_price': analysis['current_price'],
+                'trend_primary': analysis.get('trend_primary'),
+                'trend_secondary': analysis.get('trend_secondary'),
+                'price_action': price_action,
+                'momentum': momentum,
+                'decision': decision,
+                'signal_generated': signal is not None,
+                'timestamp': timestamp
+            })
+
+            # Save signal if generated
+            if signal:
+                signal_id = self.db.save_signal({
+                    'pair': signal.pair,
+                    'timeframe': signal.timeframe,
+                    'signal': signal.signal,
+                    'confidence': signal.confidence,
+                    'entry_price': signal.entry_price,
+                    'stop_loss': signal.stop_loss,
+                    'take_profit': signal.take_profit,
+                    'risk_reward_ratio': signal.risk_reward_ratio,
+                    'pips_risk': signal.pips_risk,
+                    'pips_reward': signal.pips_reward,
+                    'reasoning': signal.reasoning,
+                    'indicators': signal.indicators,
+                    'executed': False,
+                    'timestamp': timestamp,
+                    # SL/TP calculation details
+                    'sl_method': signal.sl_method,
+                    'tp_method': signal.tp_method,
+                    'rr_adjusted': signal.rr_adjusted,
+                    'calculation_steps': signal.calculation_steps,
+                    'atr_value': signal.atr_value,
+                    'nearest_support': signal.nearest_support,
+                    'nearest_resistance': signal.nearest_resistance
+                })
+
+                # Auto-execute if enabled
+                if self.auto_trading:
+                    position_id = self.trader.open_position(signal)
+                    if position_id:
+                        self.db.mark_signal_executed(signal_id)
+                        print(f"  ✅ {pair}: {signal.signal} signal executed (Position: {position_id})")
+                    else:
+                        print(f"  ⚠️ {pair}: Could not execute signal")
+                else:
+                    print(f"  🎯 {pair}: {signal.signal} signal generated ({signal.confidence*100:.0f}% confidence)")
+            else:
+                decision_signal = decision.get('signal', 'HOLD')
+                if decision_signal != 'HOLD':
+                    print(f"  ⏸️ {pair}: {decision_signal} (confidence too low: {decision.get('confidence', 0)}%)")
+
+            # Save market data
+            self.db.save_market_data({
+                'pair': pair,
+                'current_price': analysis['current_price'],
+                'timestamp': timestamp
+            })
+
+            return {
+                'pair': pair,
+                'success': True,
+                'signal': signal,
+                'decision': decision
+            }
+
+        except Exception as e:
+            print(f"  ❌ {pair}: Error - {str(e)}")
+            traceback.print_exc()
+            return {
+                'pair': pair,
+                'success': False,
+                'error': str(e)
+            }
+
+    def analyze_all_pairs_concurrent(self) -> List[Dict]:
+        """
+        Analyze all pairs concurrently using thread pool.
+
+        Returns:
+            List of analysis results for all pairs
+        """
+        print(f"\n🔄 Analyzing {len(ForexConfig.ALL_PAIRS)} pairs concurrently...")
+        start_time = time.time()
+
+        results = []
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all pair analyses
+            future_to_pair = {
+                executor.submit(self.analyze_pair, pair): pair
+                for pair in ForexConfig.ALL_PAIRS
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_pair):
+                pair = future_to_pair[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    print(f"  ❌ {pair}: Exception - {e}")
+                    results.append({
+                        'pair': pair,
+                        'success': False,
+                        'error': str(e)
+                    })
+
+        elapsed = time.time() - start_time
+        successful = sum(1 for r in results if r['success'])
+        signals_generated = sum(1 for r in results if r.get('signal') is not None)
+
+        print(f"✅ Analysis complete in {elapsed:.1f}s")
+        print(f"   Successful: {successful}/{len(ForexConfig.ALL_PAIRS)}")
+        print(f"   Signals generated: {signals_generated}")
+
+        return results
+
+    def update_positions(self):
+        """Update all open positions and save to database."""
+        try:
+            # Update positions with latest prices
+            self.trader.update_positions()
+
+            # Save all open positions to database
+            for position in self.trader.open_positions.values():
+                self.db.save_position({
+                    'position_id': position.position_id,
+                    'pair': position.pair,
+                    'side': position.side,
+                    'units': position.units,
+                    'entry_price': position.entry_price,
+                    'entry_time': position.entry_time.isoformat(),
+                    'stop_loss': position.stop_loss,
+                    'take_profit': position.take_profit,
+                    'current_price': position.current_price,
+                    'unrealized_pl': position.unrealized_pl,
+                    'status': 'OPEN',
+                    'signal_confidence': position.signal_confidence
+                })
+
+            # Save completed trades to database
+            for trade in self.trader.trade_history:
+                # Check if trade already exists
+                existing_trades = self.db.get_trades(limit=1000)
+                trade_ids = [t['trade_id'] for t in existing_trades]
+
+                if f"{trade.pair}_{trade.exit_time.strftime('%Y%m%d%H%M%S')}" not in trade_ids:
+                    self.db.save_trade({
+                        'trade_id': f"{trade.pair}_{trade.exit_time.strftime('%Y%m%d%H%M%S')}",
+                        'pair': trade.pair,
+                        'side': trade.side,
+                        'units': trade.units,
+                        'entry_price': trade.entry_price,
+                        'exit_price': trade.exit_price,
+                        'stop_loss': trade.stop_loss,
+                        'take_profit': trade.take_profit,
+                        'entry_time': trade.entry_time.isoformat(),
+                        'exit_time': trade.exit_time.isoformat(),
+                        'realized_pl': trade.realized_pl,
+                        'realized_pl_pips': trade.realized_pl_pips,
+                        'exit_reason': trade.exit_reason,
+                        'signal_confidence': trade.signal_confidence,
+                        'signal_reasoning': trade.signal_reasoning
+                    })
+
+            # Save performance metrics
+            stats = self.trader.get_statistics()
+            self.db.save_performance_metrics({
+                'balance': self.trader.balance,
+                'equity': self.trader.equity,
+                'unrealized_pl': self.trader.get_unrealized_pnl(),
+                'realized_pl_today': stats['total_pnl'],
+                'open_positions': len(self.trader.open_positions),
+                'total_trades': stats['total_trades'],
+                'win_rate': stats['win_rate'],
+                'profit_factor': stats['profit_factor'],
+                'timestamp': datetime.now()
+            })
+
+        except Exception as e:
+            print(f"⚠️ Error updating positions: {e}")
+            traceback.print_exc()
+
+    def run_cycle(self):
+        """Run one complete analysis cycle."""
+        print(f"\n{'='*80}")
+        print(f"📊 ANALYSIS CYCLE - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{'='*80}")
+
+        # 1. Update existing positions
+        print("\n1️⃣ Updating open positions...")
+        self.update_positions()
+
+        # 2. Analyze all pairs concurrently
+        print("\n2️⃣ Analyzing all pairs...")
+        results = self.analyze_all_pairs_concurrent()
+
+        # 3. Display summary
+        print(f"\n3️⃣ Summary:")
+        print(f"   Balance: €{self.trader.balance:,.2f}")
+        print(f"   Equity: €{self.trader.equity:,.2f}")
+        print(f"   Open Positions: {len(self.trader.open_positions)}")
+        print(f"   Total Trades: {len(self.trader.trade_history)}")
+
+        # Save trader state
+        self.trader.save_state()
+
+        print(f"\n{'='*80}\n")
+
+    def start(self):
+        """Start the worker (runs in background thread)."""
+        if self.running:
+            print("⚠️ Worker already running")
+            return
+
+        self.running = True
+        self.worker_thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.worker_thread.start()
+        print("✅ Concurrent worker started (running every 60 seconds)")
+
+    def _run_loop(self):
+        """Background loop that runs every 60 seconds."""
+        while self.running:
+            try:
+                self.run_cycle()
+            except Exception as e:
+                print(f"❌ Error in worker cycle: {e}")
+                traceback.print_exc()
+
+            # Wait 60 seconds before next cycle
+            if self.running:
+                print(f"⏳ Waiting 60 seconds until next cycle...")
+                time.sleep(60)
+
+    def stop(self):
+        """Stop the worker."""
+        if not self.running:
+            print("⚠️ Worker not running")
+            return
+
+        print("🛑 Stopping worker...")
+        self.running = False
+        if self.worker_thread:
+            self.worker_thread.join(timeout=5)
+        print("✅ Worker stopped")
+
+    def run_once(self):
+        """Run one cycle immediately (for testing)."""
+        self.run_cycle()
+
+
+def main():
+    """Main function for standalone worker."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Concurrent Trading Worker')
+    parser.add_argument('--balance', type=float, default=50000.0, help='Initial balance')
+    parser.add_argument('--auto-trading', action='store_true', help='Enable auto-trading')
+    parser.add_argument('--workers', type=int, default=10, help='Max concurrent workers')
+    parser.add_argument('--once', action='store_true', help='Run once and exit')
+
+    args = parser.parse_args()
+
+    worker = ConcurrentTradingWorker(
+        initial_balance=args.balance,
+        auto_trading=args.auto_trading,
+        max_workers=args.workers
+    )
+
+    if args.once:
+        # Run once and exit
+        worker.run_once()
+    else:
+        # Run continuously
+        worker.start()
+
+        try:
+            # Keep main thread alive
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n\n⚠️ Keyboard interrupt received")
+            worker.stop()
+
+
+if __name__ == "__main__":
+    main()

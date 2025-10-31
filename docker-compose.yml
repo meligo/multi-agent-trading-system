@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  trading-system:
+    build: .
+    container_name: trading-system
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+    volumes:
+      - ./data_cache:/app/data_cache
+      - ./memory_db:/app/memory_db
+      - ./results:/app/results
+    command: NVDA
+    # To run with custom date:
+    # command: NVDA --date 2024-01-15

@@ -1,0 +1,303 @@
+{
+  "initial_balance": 50000.0,
+  "balance": 32637.81536671094,
+  "equity": 33547.011938358795,
+  "daily_pnl": -17362.184633289064,
+  "total_pnl": -17362.184633289064,
+  "open_positions": [
+    {
+      "position_id": "GBP_CHF_20251027_160445",
+      "pair": "GBP_CHF",
+      "side": "SELL",
+      "units": 961000,
+      "entry_price": 1.0610373441155412,
+      "entry_time": "2025-10-27T16:04:45.271890",
+      "stop_loss": 1.0617010625750871,
+      "take_profit": 1.060257874849826,
+      "current_price": 1.0607550000000001,
+      "unrealized_pl": 287.612656737063,
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Both analyses indicate a bearish direction, aligning on the sell signal.",
+        "Confidence levels from price action analysis are above 60%, indicating a strong setup.",
+        "The price is near resistance at 1.06248, with strong selling pressure and bearish indicators supporting a high-probability setup."
+      ]
+    }
+  ],
+  "trade_history": [
+    {
+      "trade_id": "EUR_GBP_20251027_155925",
+      "pair": "EUR_GBP",
+      "side": "SELL",
+      "units": 1000000,
+      "entry_price": 0.8727574186701922,
+      "exit_price": 0.8734491274759529,
+      "stop_loss": 0.8732591685706788,
+      "take_profit": 0.8724216628586423,
+      "entry_time": "2025-10-27T15:59:25.896768",
+      "exit_time": "2025-10-27T16:00:32.165306",
+      "realized_pl": -809.2993027400763,
+      "realized_pl_pips": -6.267499004866117,
+      "exit_reason": "SL",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "The price action analysis indicates a bearish rejection setup with strong alignment to sell at resistance level 0.87314.",
+        "The ADX suggests a strong trend, and the bearish divergence supports the likelihood of a downward move.",
+        "Despite mixed momentum signals, the overall bearish sentiment and setup provide a favorable risk/reward scenario."
+      ]
+    },
+    {
+      "trade_id": "GBP_USD_20251027_160010",
+      "pair": "GBP_USD",
+      "side": "SELL",
+      "units": 861000,
+      "entry_price": 1.3331637768019204,
+      "exit_price": 1.3319780562351495,
+      "stop_loss": 1.3339201294904541,
+      "take_profit": 1.332029741019092,
+      "entry_time": "2025-10-27T16:00:10.830610",
+      "exit_time": "2025-10-27T16:08:10.981087",
+      "realized_pl": 929.0239212706751,
+      "realized_pl_pips": 10.340357828284574,
+      "exit_reason": "TP",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Bearish rejection setup near resistance at 1.33538 with strong selling pressure indicated by OBV Z-score.",
+        "The ADX above 25 confirms a strong trend, supporting the bearish sentiment.",
+        "Despite mixed momentum signals, the overall analysis shows a high probability of price rejection at current levels."
+      ]
+    },
+    {
+      "trade_id": "USD_CHF_20251027_155951",
+      "pair": "USD_CHF",
+      "side": "SELL",
+      "units": 1000000,
+      "entry_price": 0.7962378845534792,
+      "exit_price": 0.7969297356050713,
+      "stop_loss": 0.7966964317693047,
+      "take_profit": 0.7957053523460429,
+      "entry_time": "2025-10-27T15:59:51.289312",
+      "exit_time": "2025-10-27T16:08:17.090197",
+      "realized_pl": -733.3621146876102,
+      "realized_pl_pips": -5.585472158254889,
+      "exit_reason": "SL",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Price action analysis indicates a bearish rejection setup near resistance at 0.79730.",
+        "Bearish divergence and negative OBV change rate suggest weakening buying pressure.",
+        "Despite neutral momentum, the overall setup presents a high-probability opportunity for a sell position."
+      ]
+    },
+    {
+      "trade_id": "NZD_USD_20251027_160002",
+      "pair": "NZD_USD",
+      "side": "SELL",
+      "units": 1000000,
+      "entry_price": 0.5760271388798468,
+      "exit_price": 0.5756105510539687,
+      "stop_loss": 0.5763456220718829,
+      "take_profit": 0.5755315668921757,
+      "entry_time": "2025-10-27T16:00:02.198389",
+      "exit_time": "2025-10-27T16:08:19.088922",
+      "realized_pl": 379.09492154903137,
+      "realized_pl_pips": 3.705719876710978,
+      "exit_reason": "TP",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Price action analysis indicates a bearish rejection setup with strong selling pressure near resistance levels.",
+        "Bearish divergence and negative OBV Z-score support the decision to sell despite weak momentum.",
+        "The overall market conditions align with a high-probability bearish trend, making it a favorable risk/reward scenario."
+      ]
+    },
+    {
+      "trade_id": "XPT_USD_20251027_161206",
+      "pair": "XPT_USD",
+      "side": "SELL",
+      "units": 1000,
+      "entry_price": 1546.6713700000003,
+      "exit_price": 1549.7473077684801,
+      "stop_loss": 1549.747,
+      "take_profit": 1542.057,
+      "entry_time": "2025-10-27T16:12:06.259267",
+      "exit_time": "2025-10-27T16:13:52.047858",
+      "realized_pl": -2799.103369316699,
+      "realized_pl_pips": -30757.29999999794,
+      "exit_reason": "SL",
+      "signal_confidence": 0.85,
+      "signal_reasoning": [
+        "Both price action and momentum analyses indicate a strong bearish trend, with high confidence levels.",
+        "The market is below key levels and the bearish ADX supports the continuation of the downtrend.",
+        "Despite oversold conditions in oscillators, the lack of divergence and strong selling pressure suggest a high-probability setup for a sell."
+      ]
+    },
+    {
+      "trade_id": "AUD_JPY_20251027_160435",
+      "pair": "AUD_JPY",
+      "side": "SELL",
+      "units": 1000000,
+      "entry_price": 100.18246843906293,
+      "exit_price": 100.30925659141793,
+      "stop_loss": 100.27549728668097,
+      "take_profit": 100.092,
+      "entry_time": "2025-10-27T16:04:35.387929",
+      "exit_time": "2025-10-27T16:24:43.935607",
+      "realized_pl": -773.4077293655275,
+      "realized_pl_pips": -10.802884761804421,
+      "exit_reason": "SL",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Both price action and momentum analyses indicate a bearish sentiment, aligning on the direction to sell.",
+        "Confidence levels from both analyses are above 60%, with price action at 75% and momentum at 65%.",
+        "The setup is high-probability due to bearish rejection at resistance and confirmation from multiple indicators despite weak momentum."
+      ]
+    },
+    {
+      "trade_id": "XAG_USD_20251027_160900",
+      "pair": "XAG_USD",
+      "side": "SELL",
+      "units": 2000,
+      "entry_price": 46.23887,
+      "exit_price": 46.4835244917898,
+      "stop_loss": 46.48342548348367,
+      "take_profit": 45.751649033032656,
+      "entry_time": "2025-10-27T16:09:00.954608",
+      "exit_time": "2025-10-27T16:28:09.869018",
+      "realized_pl": -445.27117505744036,
+      "realized_pl_pips": -2446.55483483676,
+      "exit_reason": "SL",
+      "signal_confidence": 0.85,
+      "signal_reasoning": [
+        "Both price action and momentum analyses indicate a strong bearish trend with high confidence levels.",
+        "The market is below the key resistance level of 46.38498, reinforcing the bearish outlook.",
+        "The absence of divergence and alignment of timeframes support a high-probability setup for a continued downward movement."
+      ]
+    },
+    {
+      "trade_id": "AUD_USD_20251027_155958",
+      "pair": "AUD_USD",
+      "side": "SELL",
+      "units": 1000000,
+      "entry_price": 0.654739847858559,
+      "exit_price": 0.6552719094219842,
+      "stop_loss": 0.6552657466428207,
+      "take_profit": 0.6543013800357691,
+      "entry_time": "2025-10-27T15:59:58.854681",
+      "exit_time": "2025-10-27T16:30:23.849808",
+      "realized_pl": -484.17602271695336,
+      "realized_pl_pips": -6.158987842617147,
+      "exit_reason": "SL",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Both price action and momentum analysis indicate a bearish sentiment, with price action showing a bearish rejection setup.",
+        "The price is approaching a key resistance level at 0.65592, providing a high-probability setup for a sell.",
+        "Despite the momentum being neutral, the overall bearish divergence and selling pressure from the OBV Z-Score support the decision to sell."
+      ]
+    },
+    {
+      "trade_id": "EUR_JPY_20251027_160024",
+      "pair": "EUR_JPY",
+      "side": "SELL",
+      "units": 989000,
+      "entry_price": 178.11452491771573,
+      "exit_price": 178.22942149642552,
+      "stop_loss": 178.20983267594198,
+      "take_profit": 177.964334648116,
+      "entry_time": "2025-10-27T16:00:24.993657",
+      "exit_time": "2025-10-27T16:39:19.829714",
+      "realized_pl": -693.1595696982879,
+      "realized_pl_pips": -10.780775822624378,
+      "exit_reason": "SL",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Both analyses indicate a bearish direction, aligning on the sell signal.",
+        "Confidence levels are above 60%, with price action analysis at 75% and momentum analysis at 65%.",
+        "The price is near a key resistance level (178.16533), presenting a favorable risk/reward opportunity for a sell position."
+      ]
+    },
+    {
+      "trade_id": "XAU_USD_20251027_161106",
+      "pair": "XAU_USD",
+      "side": "SELL",
+      "units": 1000,
+      "entry_price": 3982.25037,
+      "exit_price": 3997.425008269393,
+      "stop_loss": 3997.4250865550307,
+      "take_profit": 3951.8998268899386,
+      "entry_time": "2025-10-27T16:11:06.599499",
+      "exit_time": "2025-10-27T17:19:30.709809",
+      "realized_pl": -13808.920825147397,
+      "realized_pl_pips": -151748.16555030702,
+      "exit_reason": "SL",
+      "signal_confidence": 0.85,
+      "signal_reasoning": [
+        "Both price action and momentum analyses indicate a bearish direction, aligning on the sell signal.",
+        "Confidence levels are high, with price action at 85% and momentum at 75%, indicating a strong setup.",
+        "The market is in a strong bearish trend with significant selling pressure, making this a high-probability setup."
+      ]
+    },
+    {
+      "trade_id": "EUR_CHF_20251027_160421",
+      "pair": "EUR_CHF",
+      "side": "SELL",
+      "units": 1000000,
+      "entry_price": 0.9266470470945858,
+      "exit_price": 0.9262396228848867,
+      "stop_loss": 0.9270195756970289,
+      "take_profit": 0.9260608486059423,
+      "entry_time": "2025-10-27T16:04:21.813689",
+      "exit_time": "2025-10-27T17:51:05.294114",
+      "realized_pl": 431.8696622810259,
+      "realized_pl_pips": 4.61198488643455,
+      "exit_reason": "TP",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Both analyses indicate a bearish setup with the price near resistance at 0.92703.",
+        "The price action analysis shows a bearish rejection setup with a confidence level of 75%.",
+        "The current market conditions reflect a bearish divergence, supporting the sell decision despite weak momentum."
+      ]
+    },
+    {
+      "trade_id": "USD_JPY_20251027_160104",
+      "pair": "USD_JPY",
+      "side": "SELL",
+      "units": 934000,
+      "entry_price": 153.03077820218132,
+      "exit_price": 152.8869561216501,
+      "stop_loss": 153.1339407402301,
+      "take_profit": 152.8761185195398,
+      "entry_time": "2025-10-27T16:01:04.853683",
+      "exit_time": "2025-10-27T19:49:15.682006",
+      "realized_pl": 819.4119216186692,
+      "realized_pl_pips": 14.715968264152934,
+      "exit_reason": "TP",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Bearish rejection setup confirmed by price action analysis with a strong resistance level at 153.06750.",
+        "Bearish divergence indicates potential for a price reversal despite mixed momentum signals.",
+        "Key support level at 152.76831 provides a favorable risk/reward ratio for a sell position."
+      ]
+    },
+    {
+      "trade_id": "USD_CAD_20251027_160007",
+      "pair": "USD_CAD",
+      "side": "SELL",
+      "units": 1000000,
+      "entry_price": 1.400207737186434,
+      "exit_price": 1.3992747296510288,
+      "stop_loss": 1.4007778068443422,
+      "take_profit": 1.3992543863113152,
+      "entry_time": "2025-10-27T16:00:07.931136",
+      "exit_time": "2025-10-27T19:49:17.989168",
+      "realized_pl": 625.1150487215251,
+      "realized_pl_pips": 8.533508751189522,
+      "exit_reason": "TP",
+      "signal_confidence": 0.75,
+      "signal_reasoning": [
+        "Bearish rejection setup with strong resistance at 1.40083 and bearish divergence signals potential price reversal.",
+        "Market sentiment is aligned with a 50% bearish stance from hedge fund strategies, supporting the sell decision.",
+        "Current price action shows overbought conditions with high RSI and Stochastic, indicating a likely pullback."
+      ]
+    }
+  ],
+  "timestamp": "2025-10-27T19:49:19.312621"
+}

@@ -1,0 +1,6 @@
+# Demo Watchlist - Quick Test (3 stocks)
+# Use this for testing: python batch_analyzer.py --watchlist watchlist_demo.txt
+
+NVDA    # NVIDIA Corporation
+AAPL    # Apple Inc
+MSFT    # Microsoft Corporation

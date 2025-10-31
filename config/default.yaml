@@ -1,0 +1,44 @@
+# Default Configuration for Multi-Agent Trading System
+
+llm:
+  provider: "openai"
+  deep_think_model: "gpt-4o"
+  quick_think_model: "gpt-4o-mini"
+  temperature: 0.1
+  backend_url: "https://api.openai.com/v1"
+  timeout: 60
+
+debate:
+  max_debate_rounds: 2
+  max_risk_discuss_rounds: 1
+
+tools:
+  online_tools: true
+  cache_enabled: true
+  cache_ttl: 3600
+  data_cache_dir: "./data_cache"
+  max_retries: 3
+  retry_delay: 1.0
+
+memory:
+  embedding_model: "text-embedding-3-small"
+  max_memories: 100
+  similarity_threshold: 0.7
+  persistence_dir: "./memory_db"
+
+observability:
+  langsmith_enabled: true
+  langsmith_project: "Production-Trading-System"
+  prometheus_enabled: false
+  prometheus_port: 9090
+  log_level: "INFO"
+
+backtesting:
+  initial_capital: 100000.0
+  commission: 0.001
+  slippage: 0.0005
+  risk_free_rate: 0.02
+
+# System settings
+max_recur_limit: 100
+results_dir: "./results"

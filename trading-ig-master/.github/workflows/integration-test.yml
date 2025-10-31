@@ -1,0 +1,47 @@
+
+name: trading-ig integration test
+
+on:
+  schedule:
+    - cron: '25 2 * * 1-4'
+  workflow_dispatch:
+    
+jobs:
+  build:
+    if: github.repository == 'ig-python/trading-ig'
+    runs-on: ubuntu-latest
+
+    steps:
+
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install Poetry
+      uses: abatilo/actions-poetry@v3
+      with:
+        poetry-version: "latest"
+
+    - name: Install dependencies
+      run: |
+        poetry install --extras "pandas munch tenacity"
+
+    - name: Integration test with pytest
+      env:
+        IG_SERVICE_USERNAME:  ${{ secrets.IG_SERVICE_USERNAME }}
+        IG_SERVICE_PASSWORD:  ${{ secrets.IG_SERVICE_PASSWORD }}
+        IG_SERVICE_API_KEY:  ${{ secrets.IG_SERVICE_API_KEY }}
+        IG_SERVICE_ACC_TYPE:  ${{ secrets.IG_SERVICE_ACC_TYPE }}
+        IG_SERVICE_ACC_NUMBER:  ${{ secrets.IG_SERVICE_ACC_NUMBER_1 }}
+      run: |
+        poetry run coverage run -m --source=trading_ig pytest --log-cli-level=DEBUG --log-format="%(asctime)s %(levelname)s %(message)s" --log-date-format="%Y-%m-%d %H:%M:%S"
+        poetry run coverage report
+
+    - name: Coveralls
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        poetry run coveralls --service=github
