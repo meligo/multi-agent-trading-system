@@ -601,6 +601,86 @@ class ScalpingEngine:
         print(f"Total P&L: {self.daily_stats.total_pnl:+.2f}%")
         print(f"{'='*80}\n")
 
+    # ========================================================================
+    # DASHBOARD API METHODS
+    # ========================================================================
+
+    def get_performance_stats(self) -> Dict:
+        """Get current performance statistics for dashboard."""
+        stats = {
+            'total_trades': len(self.trade_history),
+            'open_positions': len(self.open_trades),
+            'daily_pnl': sum([t['pnl'] for t in self.trade_history]),
+            'profit_factor': 0.0,
+            'win_rate': 0.0,
+            'avg_trade_duration_minutes': 0.0,
+        }
+
+        if len(self.trade_history) > 0:
+            wins = [t for t in self.trade_history if t['pnl'] > 0]
+            losses = [t for t in self.trade_history if t['pnl'] < 0]
+
+            stats['win_rate'] = (len(wins) / len(self.trade_history)) * 100
+
+            total_wins = sum([t['pnl'] for t in wins])
+            total_losses = abs(sum([t['pnl'] for t in losses]))
+
+            if total_losses > 0:
+                stats['profit_factor'] = total_wins / total_losses
+
+            durations = [(t['exit_time'] - t['entry_time']).total_seconds() / 60
+                        for t in self.trade_history]
+            stats['avg_trade_duration_minutes'] = sum(durations) / len(durations)
+
+        return stats
+
+    def get_current_spread(self, pair: str) -> float:
+        """Get current spread for a pair (mock for now)."""
+        # TODO: Integrate with actual IG API spread data
+        # For now, return realistic spreads
+        spreads = {
+            'EUR_USD': 0.8,
+            'GBP_USD': 1.2,
+            'USD_JPY': 0.9,
+        }
+        return spreads.get(pair, 1.5)
+
+    def get_open_positions(self) -> List[Dict]:
+        """Get list of currently open positions for dashboard."""
+        positions = []
+        for trade in self.open_trades:
+            # Calculate current P&L (mock for now)
+            current_price = trade['entry_price'] * 1.0001  # Mock price movement
+            pips_move = (current_price - trade['entry_price']) * 10000
+
+            if trade['direction'] == 'SHORT':
+                pips_move = -pips_move
+
+            current_pnl = pips_move * 10  # $10 per pip for 1.0 lot
+
+            positions.append({
+                'pair': trade['pair'],
+                'direction': trade['direction'],
+                'entry_price': trade['entry_price'],
+                'take_profit': trade['take_profit'],
+                'stop_loss': trade['stop_loss'],
+                'entry_time': trade['entry_time'],
+                'current_pnl': current_pnl,
+                'pips_pnl': pips_move,
+            })
+
+        return positions
+
+    def get_recent_debates(self) -> List[Dict]:
+        """Get recent agent debates for dashboard display."""
+        # Return stored debates (if we implement debate storage)
+        # For now, return empty list
+        return []
+
+    def get_trade_history(self) -> List[Dict]:
+        """Get completed trade history."""
+        return self.trade_history
+
 
 if __name__ == "__main__":
     # Test engine initialization
