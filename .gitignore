@@ -1,5 +1,6 @@
 # Environment variables and secrets
 .env
+.env.scalper
 .env.local
 .env.*.local
 *.key

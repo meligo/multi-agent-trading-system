@@ -8,9 +8,12 @@ Optimized for high-frequency trading on EUR/USD, GBP/USD, USD/JPY
 import os
 from typing import List, Dict
 from datetime import time
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load scalping-specific environment variables
+env_path = Path(__file__).parent / '.env.scalper'
+load_dotenv(dotenv_path=env_path)
 
 
 class ScalpingConfig:
