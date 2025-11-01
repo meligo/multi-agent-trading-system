@@ -71,6 +71,7 @@ class FastMomentumAgent:
         # VWAP (institutional anchor)
         vwap = indicators.get('vwap', current_price)
         above_vwap = indicators.get('above_vwap', False)
+        vwap_z_score = indicators.get('vwap_z_score', 0.0)
 
         # Donchian breakout
         donchian_upper = indicators.get('donchian_upper', current_price * 1.001)
@@ -99,6 +100,29 @@ class FastMomentumAgent:
         # SuperTrend direction
         supertrend_direction = indicators.get('supertrend_direction', 0)
 
+        # NEW: Professional Scalping Techniques
+        # Opening Range Breakout
+        orb_breakout_long = indicators.get('orb_breakout_long', False)
+        orb_breakout_short = indicators.get('orb_breakout_short', False)
+        in_orb_window = indicators.get('in_orb_window', False)
+
+        # Liquidity Sweep / SFP
+        long_sweep_detected = indicators.get('long_sweep_detected', False)
+        short_sweep_detected = indicators.get('short_sweep_detected', False)
+
+        # Impulse Move Detection
+        is_impulse = indicators.get('is_impulse', False)
+        impulse_direction = indicators.get('impulse_direction', 0)
+        first_pullback = indicators.get('first_pullback_detected', False)
+
+        # Fix Window (London Fix 15:40-16:10 GMT)
+        in_fix_window = indicators.get('in_fix_window', False)
+        fix_type = indicators.get('fix_type', None)
+
+        # VWAP Mean Reversion (choppy markets)
+        vwap_reversion_long = indicators.get('vwap_reversion_long', False)
+        vwap_reversion_short = indicators.get('vwap_reversion_short', False)
+
         # Determine trend direction
         if ema_ribbon_bullish and above_vwap:
             ema_trend = "BULLISH"
@@ -124,13 +148,13 @@ class FastMomentumAgent:
         vwap_bias = "LONG_BIAS" if above_vwap else "SHORT_BIAS"
 
         prompt = f"""You are a Fast Momentum Scalping Expert analyzing {pair} on 1-minute chart for 10-20 minute trades.
-Uses OPTIMIZED indicators: Fast EMA (3,6,12), VWAP, Donchian, RSI(7), ADX(7).
+Uses OPTIMIZED indicators + PROFESSIONAL TECHNIQUES: Fast EMA (3,6,12), VWAP, Donchian, RSI(7), ADX(7), ORB, SFP, Impulse Detection.
 
 CURRENT PRICE: {current_price:.5f}
 
 OPTIMIZED MOMENTUM INDICATORS:
 - EMA Ribbon (3,6,12): {ema_trend} (3: {ema_3:.5f}, 6: {ema_6:.5f}, 12: {ema_12:.5f})
-- VWAP: {vwap:.5f} → Price is {vwap_position} VWAP ({vwap_bias})
+- VWAP: {vwap:.5f} → Price is {vwap_position} VWAP ({vwap_bias}) | Z-Score: {vwap_z_score:.2f}
 - Donchian Breakout: {"LONG" if donchian_breakout_long else "SHORT" if donchian_breakout_short else "NONE"}
 - RSI(7): {rsi:.1f} ({rsi_signal})
 - ADX(7): {adx:.1f} {"TRENDING" if adx_trending else "CHOPPY"} (DI: {"+" if di_bullish else "-" if di_bearish else "neutral"})
@@ -138,10 +162,18 @@ OPTIMIZED MOMENTUM INDICATORS:
 - BB Squeeze: {"ON (compressed)" if squeeze_on else "OFF (released)" if squeeze_off else "normal"}
 - SuperTrend: {"BULLISH" if supertrend_direction == 1 else "BEARISH" if supertrend_direction == -1 else "neutral"}
 
+PROFESSIONAL SCALPING SETUPS:
+- Opening Range Breakout: {"LONG breakout" if orb_breakout_long else "SHORT breakout" if orb_breakout_short else "NO breakout"} {"(active window)" if in_orb_window else ""}
+- Liquidity Sweep/SFP: {"LONG sweep (fade SHORT)" if long_sweep_detected else "SHORT sweep (fade LONG)" if short_sweep_detected else "NO sweep"}
+- Impulse + Pullback: {"Impulse detected" if is_impulse else "NO impulse"} {"→ First pullback (BUY DIP)" if first_pullback and impulse_direction > 0 else "→ First pullback (SELL RALLY)" if first_pullback and impulse_direction < 0 else ""}
+- VWAP Mean Reversion: {"LONG reversion (oversold)" if vwap_reversion_long else "SHORT reversion (overbought)" if vwap_reversion_short else "NO reversion"}
+- London Fix Window: {"YES ({fix_type})" if in_fix_window else "NO"} {"- FADE extreme moves" if in_fix_window else ""}
+
 SCALPING RULES:
-- Only trade HIGH PROBABILITY setups with 2+ confirmations
-- Look for: EMA breakouts + volume spike, RSI momentum + support bounce
-- Avoid: choppy/ranging markets, weak volume, conflicting signals
+- PRIORITIZE professional setups: ORB breakout, SFP fade, Impulse pullback (HIGH win-rate)
+- VWAP reversion only in CHOPPY markets (ADX < 18)
+- Only trade with 2+ confirmations (momentum + professional setup)
+- Avoid: choppy/ranging markets (unless VWAP reversion), weak volume, conflicting signals
 
 Is there a CLEAR, HIGH-PROBABILITY scalping setup RIGHT NOW?
 
@@ -150,9 +182,9 @@ Respond in JSON format:
     "has_setup": true/false,
     "direction": "BUY/SELL/NONE",
     "confidence": 0-100,
-    "setup_type": "EMA_BREAKOUT" or "MOMENTUM_SURGE" or "BOUNCE" or "NONE",
+    "setup_type": "ORB_BREAKOUT" or "SFP_FADE" or "IMPULSE_PULLBACK" or "VWAP_REVERSION" or "EMA_BREAKOUT" or "MOMENTUM_SURGE" or "NONE",
     "key_triggers": ["list", "of", "signals"],
-    "reasoning": "brief explanation focusing on momentum and confirmations"
+    "reasoning": "brief explanation focusing on which professional setup is active and momentum confirmations"
 }}"""
 
         response = self.llm.invoke([HumanMessage(content=prompt)])
@@ -203,12 +235,14 @@ class TechnicalAgent:
         """
         pair = market_data['pair']
         current_price = market_data['current_price']
+        indicators = market_data['indicators']
         support = market_data.get('nearest_support', current_price * 0.999)
         resistance = market_data.get('nearest_resistance', current_price * 1.001)
 
         # Calculate distance to S/R
-        dist_to_support = (current_price - support) * 10000 if support else 999
-        dist_to_resistance = (resistance - current_price) * 10000 if resistance else 999
+        pip_value = 0.0001 if 'JPY' not in pair else 0.01
+        dist_to_support = (current_price - support) / pip_value if support else 999
+        dist_to_resistance = (resistance - current_price) / pip_value if resistance else 999
 
         # Position relative to S/R
         if dist_to_support < 5:
@@ -220,19 +254,67 @@ class TechnicalAgent:
         else:
             position = "BELOW_RESISTANCE"
 
+        # NEW: Professional Technical Levels
+        # Floor Pivot Points
+        pivot_pp = indicators.get('pivot_PP', current_price)
+        pivot_r1 = indicators.get('pivot_R1', current_price * 1.001)
+        pivot_s1 = indicators.get('pivot_S1', current_price * 0.999)
+        pivot_r2 = indicators.get('pivot_R2', current_price * 1.002)
+        pivot_s2 = indicators.get('pivot_S2', current_price * 0.998)
+
+        # Big Figure Levels (nearest)
+        nearest_big_figure = indicators.get('nearest_big_figure', current_price)
+        dist_to_big_figure = abs(current_price - nearest_big_figure) / pip_value
+
+        # Opening Range levels
+        or_high = indicators.get('OR_high', current_price * 1.001)
+        or_low = indicators.get('OR_low', current_price * 0.999)
+
+        # Inside Bar Compression
+        inside_bar_compression = indicators.get('inside_bar_compression', False)
+        nr_bars = indicators.get('nr_bars', 0)
+
+        # ADR Position (% of daily range used)
+        adr_pct_used = indicators.get('adr_pct_used', 0.0)
+
+        # Determine which pivot level is closest
+        pivot_levels = {
+            'PP': pivot_pp,
+            'R1': pivot_r1,
+            'S1': pivot_s1,
+            'R2': pivot_r2,
+            'S2': pivot_s2
+        }
+        closest_pivot = min(pivot_levels.items(), key=lambda x: abs(current_price - x[1]))
+        dist_to_pivot = abs(current_price - closest_pivot[1]) / pip_value
+
         prompt = f"""You are a Technical Scalping Expert analyzing {pair} for quick 10-pip scalp opportunities.
+Uses INSTITUTIONAL LEVELS: Floor Pivots, Big Figures, Opening Range, Compression Patterns.
 
 CURRENT PRICE: {current_price:.5f}
 
-TECHNICAL STRUCTURE:
+CLASSIC S/R STRUCTURE:
 - Nearest Support: {support:.5f} ({dist_to_support:.1f} pips away)
 - Nearest Resistance: {resistance:.5f} ({dist_to_resistance:.1f} pips away)
 - Position: {position}
 
+INSTITUTIONAL LEVELS (Banks/Funds watch these):
+- Floor Pivots: PP={pivot_pp:.5f}, R1={pivot_r1:.5f}, S1={pivot_s1:.5f}, R2={pivot_r2:.5f}, S2={pivot_s2:.5f}
+- Closest Pivot: {closest_pivot[0]} at {closest_pivot[1]:.5f} ({dist_to_pivot:.1f} pips away)
+- Big Figure: {nearest_big_figure:.5f} ({dist_to_big_figure:.1f} pips away) - Options/stops cluster here
+- Opening Range: High={or_high:.5f}, Low={or_low:.5f} - Breakout zones
+
+COMPRESSION PATTERNS:
+- Inside Bar Sequence: {"YES - Compression building" if inside_bar_compression else "NO"}
+- Narrow Range: {"NR{nr_bars} detected - Volatility squeeze" if nr_bars >= 4 else "Normal range"}
+
+DAILY CONTEXT:
+- ADR % Used: {adr_pct_used:.0f}% {"(Extended - fade setups)" if adr_pct_used > 80 else "(Room to run)" if adr_pct_used < 60 else "(Mid-range)"}
+
 SCALPING CONTEXT:
-- We need 10 pips to TP, 6 pips to SL
-- Best setups: bounces from S/R, clear breakouts with space to run
-- Avoid: price stuck between tight S/R, no room for 10-pip move
+- We need 10 pips to TP, 6 pips to SL (16 pips total range)
+- BEST setups: Pivot bounces, big figure bounces, ORB breakouts, compression breakouts
+- AVOID: Price stuck between tight levels, extended past 80% ADR
 
 Does the technical structure support a scalp trade?
 
@@ -243,7 +325,8 @@ Respond in JSON format:
     "confidence": 0-100,
     "entry_quality": "EXCELLENT/GOOD/POOR",
     "space_to_target": "SUFFICIENT/LIMITED/INSUFFICIENT",
-    "reasoning": "brief explanation"
+    "key_levels": ["which institutional levels support this trade"],
+    "reasoning": "brief explanation focusing on institutional levels and patterns"
 }}"""
 
         response = self.llm.invoke([HumanMessage(content=prompt)])
@@ -266,6 +349,7 @@ Respond in JSON format:
                 "confidence": 0,
                 "entry_quality": "POOR",
                 "space_to_target": "INSUFFICIENT",
+                "key_levels": [],
                 "reasoning": f"Parse error: {str(e)}"
             }
 
@@ -316,13 +400,14 @@ class ScalpValidator:
 
         prompt = f"""You are the SCALP VALIDATOR (Final Judge) for {pair}.
 
-Two agents have analyzed the setup:
+Two agents have analyzed the setup using PROFESSIONAL TECHNIQUES + OPTIMIZED INDICATORS:
 
 FAST MOMENTUM AGENT:
 - Has Setup: {momentum_analysis.get('has_setup')}
 - Direction: {momentum_analysis.get('direction')}
 - Confidence: {momentum_analysis.get('confidence')}%
-- Setup Type: {momentum_analysis.get('setup_type')}
+- Setup Type: {momentum_analysis.get('setup_type')} (ORB/SFP/IMPULSE_PULLBACK/VWAP_REVERSION/EMA_BREAKOUT)
+- Key Triggers: {momentum_analysis.get('key_triggers')}
 - Reasoning: {momentum_analysis.get('reasoning')}
 
 TECHNICAL AGENT:
@@ -331,24 +416,35 @@ TECHNICAL AGENT:
 - Confidence: {technical_analysis.get('confidence')}%
 - Entry Quality: {technical_analysis.get('entry_quality')}
 - Space to Target: {technical_analysis.get('space_to_target')}
+- Key Levels: {technical_analysis.get('key_levels', [])} (Pivots/BigFigs/ORB)
+- Reasoning: {technical_analysis.get('reasoning')}
 
 MARKET CONDITIONS:
 - Current Price: {current_price:.5f}
 - Spread: {spread:.1f} pips (Max allowed: {ScalpingConfig.MAX_SPREAD_PIPS})
 - Target: {ScalpingConfig.TAKE_PROFIT_PIPS} pips TP / {ScalpingConfig.STOP_LOSS_PIPS} pips SL
 
+PROFESSIONAL SETUP HIERARCHY (Win Rate Priority):
+1. ORB_BREAKOUT + Volume = 75%+ win rate (TIER 1)
+2. SFP_FADE + RSI divergence = 70%+ win rate (TIER 1)
+3. IMPULSE_PULLBACK + pivot bounce = 70%+ win rate (TIER 1)
+4. BIG_FIGURE bounce + momentum = 65%+ win rate (TIER 2)
+5. VWAP_REVERSION (choppy only) = 60%+ win rate (TIER 2)
+6. EMA_BREAKOUT + confirmations = 60%+ win rate (TIER 2)
+
 YOUR TASK: Make the final decision. This is a 10-20 minute scalp.
+- PRIORITIZE professional setups (ORB, SFP, IMPULSE) → assign TIER 1
 - Only approve if BOTH agents are confident and aligned
 - Spread cost is {spread:.1f} pips = {(spread/ScalpingConfig.TAKE_PROFIT_PIPS)*100:.0f}% of profit
-- Need HIGH probability setup to overcome spread cost
+- Need HIGH probability setup (3+ confirmations) to overcome spread cost
 
 Respond in JSON format:
 {{
     "approved": true/false,
     "direction": "BUY/SELL/NONE",
     "final_confidence": 0-100,
-    "risk_tier": 1-3 (1=highest quality, 3=skip),
-    "reasoning": "your decision explanation",
+    "risk_tier": 1-3 (1=professional setup, 2=good momentum, 3=skip),
+    "reasoning": "your decision explanation focusing on which professional setup triggered",
     "entry_triggers": ["list", "of", "confirmed", "signals"]
 }}"""
 

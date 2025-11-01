@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 
 from scalping_config import ScalpingConfig
+from scalping_indicators import ScalpingIndicators
 from scalping_agents import (
     create_scalping_agents,
     ScalpSetup,
@@ -229,26 +230,189 @@ class ScalpingEngine:
 
             current_price = data['close'].iloc[-1]
 
-            # Calculate simplified indicators for scalping
+            # Calculate ALL indicators using ScalpingIndicators class
+            # Add necessary columns for calculations
+            data = ScalpingIndicators.add_candle_metrics(data)
+
+            # OPTIMIZED INDICATORS (from indicator research)
+            # EMA Ribbon (3, 6, 12) NOT (5, 10, 20)
+            data = ScalpingIndicators.calculate_ema_ribbon(
+                data,
+                periods=ScalpingConfig.INDICATOR_PARAMS['ema_ribbon']['periods']
+            )
+
+            # VWAP with bands (institutional anchor)
+            data = ScalpingIndicators.calculate_vwap(
+                data,
+                anchor_time=datetime.now().replace(
+                    hour=ScalpingConfig.INDICATOR_PARAMS['vwap']['anchor_hour'],
+                    minute=0, second=0, microsecond=0
+                )
+            )
+
+            # Donchian Channel (15-period breakout)
+            data = ScalpingIndicators.calculate_donchian(
+                data,
+                period=ScalpingConfig.INDICATOR_PARAMS['donchian']['period']
+            )
+
+            # RSI(7) NOT RSI(14) - for fast scalping
+            data = ScalpingIndicators.calculate_rsi(
+                data,
+                period=ScalpingConfig.INDICATOR_PARAMS['rsi']['period']
+            )
+
+            # ADX(7) for trend strength
+            data = ScalpingIndicators.calculate_adx(
+                data,
+                period=ScalpingConfig.INDICATOR_PARAMS['adx']['period']
+            )
+
+            # SuperTrend for trailing stops
+            data = ScalpingIndicators.calculate_supertrend(
+                data,
+                atr_period=ScalpingConfig.INDICATOR_PARAMS['supertrend']['atr_period'],
+                multiplier=ScalpingConfig.INDICATOR_PARAMS['supertrend']['multiplier']
+            )
+
+            # Bollinger Band Squeeze
+            data = ScalpingIndicators.calculate_bb_squeeze(data)
+
+            # Volume analysis
+            data = ScalpingIndicators.calculate_volume_indicators(data)
+
+            # PROFESSIONAL SCALPING TECHNIQUES
+            # 1. Opening Range Breakout (ORB)
+            london_orb = ScalpingIndicators.calculate_opening_range(
+                data,
+                session_start_hour=ScalpingConfig.INDICATOR_PARAMS['opening_range']['london_start'],
+                range_minutes=ScalpingConfig.INDICATOR_PARAMS['opening_range']['range_minutes']
+            )
+            ny_orb = ScalpingIndicators.calculate_opening_range(
+                data,
+                session_start_hour=ScalpingConfig.INDICATOR_PARAMS['opening_range']['ny_start'],
+                range_minutes=ScalpingConfig.INDICATOR_PARAMS['opening_range']['range_minutes']
+            )
+
+            # 2. Liquidity Sweep / SFP Detection
+            data = ScalpingIndicators.detect_liquidity_sweep(
+                data,
+                lookback=ScalpingConfig.INDICATOR_PARAMS['liquidity_sweep']['lookback']
+            )
+
+            # 3. Inside Bar / Compression
+            data = ScalpingIndicators.detect_inside_bars(
+                data,
+                min_bars=ScalpingConfig.INDICATOR_PARAMS['inside_bar']['min_bars']
+            )
+            data = ScalpingIndicators.detect_narrow_range(data)
+
+            # 4. Impulse Move Detection
+            data = ScalpingIndicators.detect_impulse_move(
+                data,
+                atr_multiplier=ScalpingConfig.INDICATOR_PARAMS['impulse']['atr_multiplier']
+            )
+
+            # 5. First Pullback After Impulse
+            data = ScalpingIndicators.detect_first_pullback_after_impulse(data)
+
+            # 6. Floor Pivot Points (from previous day)
+            if len(data) >= 1440:  # Need at least 1 day of 1m data
+                prev_day_data = data.iloc[-1440:-1]
+                pivot_points = ScalpingIndicators.calculate_floor_pivots(
+                    prev_high=prev_day_data['high'].max(),
+                    prev_low=prev_day_data['low'].min(),
+                    prev_close=prev_day_data['close'].iloc[-1]
+                )
+            else:
+                # Fallback if not enough data
+                pivot_points = {
+                    'PP': current_price,
+                    'R1': current_price * 1.001,
+                    'S1': current_price * 0.999,
+                    'R2': current_price * 1.002,
+                    'S2': current_price * 0.998
+                }
+
+            # 7. Big Figure Levels
+            big_figures = ScalpingIndicators.calculate_big_figures(
+                current_price,
+                levels=ScalpingConfig.INDICATOR_PARAMS['big_figures']['levels_count']
+            )
+
+            # 8. ADR (Average Daily Range) - need daily data
+            adr = ScalpingIndicators.calculate_adr(data, period=20)
+            current_range = data['high'].iloc[-1] - data['low'].iloc[-1]
+            adr_pct_used = (current_range / adr * 100) if adr > 0 else 50
+
+            # 9. London Fix Window Detection
+            fix_window_status = ScalpingIndicators.is_fix_window(datetime.now())
+
+            # 10. VWAP Mean Reversion (for choppy markets)
+            vwap_z_score = (current_price - data['vwap'].iloc[-1]) / data['vwap_std'].iloc[-1] if 'vwap_std' in data else 0
+            vwap_reversion_long = (
+                vwap_z_score < -ScalpingConfig.INDICATOR_PARAMS['vwap_reversion']['z_score_threshold'] and
+                data['adx'].iloc[-1] < ScalpingConfig.INDICATOR_PARAMS['vwap_reversion']['adx_max']
+            )
+            vwap_reversion_short = (
+                vwap_z_score > ScalpingConfig.INDICATOR_PARAMS['vwap_reversion']['z_score_threshold'] and
+                data['adx'].iloc[-1] < ScalpingConfig.INDICATOR_PARAMS['vwap_reversion']['adx_max']
+            )
+
+            # Build comprehensive indicators dict
             indicators = {
-                "ema_5": data['close'].ewm(span=5).mean().iloc[-1],
-                "ema_10": data['close'].ewm(span=10).mean().iloc[-1],
-                "ema_20": data['close'].ewm(span=20).mean().iloc[-1],
-                "rsi_14": self._calculate_rsi(data['close'], 14),
-                "volume": data['volume'].iloc[-1] if 'volume' in data else 0,
-                "volume_avg": data['volume'].rolling(20).mean().iloc[-1] if 'volume' in data else 0,
+                # Optimized Momentum Indicators
+                "ema_3": data['ema_3'].iloc[-1],
+                "ema_6": data['ema_6'].iloc[-1],
+                "ema_12": data['ema_12'].iloc[-1],
+                "ema_ribbon_bullish": data['ema_ribbon_bullish'].iloc[-1],
+                "ema_ribbon_bearish": data['ema_ribbon_bearish'].iloc[-1],
+                "vwap": data['vwap'].iloc[-1],
+                "above_vwap": data['above_vwap'].iloc[-1],
+                "vwap_z_score": vwap_z_score,
+                "donchian_upper": data['donchian_upper'].iloc[-1],
+                "donchian_lower": data['donchian_lower'].iloc[-1],
+                "donchian_breakout_long": data['donchian_breakout_long'].iloc[-1],
+                "donchian_breakout_short": data['donchian_breakout_short'].iloc[-1],
+                "rsi": data['rsi'].iloc[-1],
+                "rsi_bullish": data['rsi_bullish'].iloc[-1],
+                "rsi_bearish": data['rsi_bearish'].iloc[-1],
+                "adx": data['adx'].iloc[-1],
+                "adx_trending": data['adx_trending'].iloc[-1],
+                "di_bullish": data['di_bullish'].iloc[-1],
+                "di_bearish": data['di_bearish'].iloc[-1],
+                "volume_spike": data['volume_spike'].iloc[-1],
+                "squeeze_on": data['squeeze_on'].iloc[-1] if 'squeeze_on' in data else False,
+                "squeeze_off": data['squeeze_off'].iloc[-1] if 'squeeze_off' in data else False,
+                "supertrend_direction": data['supertrend_direction'].iloc[-1],
+
+                # Professional Scalping Techniques
+                "orb_breakout_long": current_price > london_orb.get('OR_high', current_price) or current_price > ny_orb.get('OR_high', current_price),
+                "orb_breakout_short": current_price < london_orb.get('OR_low', current_price) or current_price < ny_orb.get('OR_low', current_price),
+                "in_orb_window": datetime.now().hour in [8, 9, 13, 14],  # London/NY open hours
+                "OR_high": max(london_orb.get('OR_high', current_price), ny_orb.get('OR_high', current_price)),
+                "OR_low": min(london_orb.get('OR_low', current_price), ny_orb.get('OR_low', current_price)),
+                "long_sweep_detected": data['long_sweep_detected'].iloc[-1] if 'long_sweep_detected' in data else False,
+                "short_sweep_detected": data['short_sweep_detected'].iloc[-1] if 'short_sweep_detected' in data else False,
+                "inside_bar_compression": data['inside_bar_compression'].iloc[-1] if 'inside_bar_compression' in data else False,
+                "nr_bars": data['nr_bars'].iloc[-1] if 'nr_bars' in data else 0,
+                "is_impulse": data['is_impulse'].iloc[-1] if 'is_impulse' in data else False,
+                "impulse_direction": data['impulse_direction'].iloc[-1] if 'impulse_direction' in data else 0,
+                "first_pullback_detected": data['first_pullback_detected'].iloc[-1] if 'first_pullback_detected' in data else False,
+                "pivot_PP": pivot_points['PP'],
+                "pivot_R1": pivot_points['R1'],
+                "pivot_S1": pivot_points['S1'],
+                "pivot_R2": pivot_points['R2'],
+                "pivot_S2": pivot_points['S2'],
+                "nearest_big_figure": min(big_figures, key=lambda x: abs(x - current_price)),
+                "adr_pct_used": adr_pct_used,
+                "in_fix_window": fix_window_status['in_fix_window'],
+                "fix_type": fix_window_status['fix_type'],
+                "vwap_reversion_long": vwap_reversion_long,
+                "vwap_reversion_short": vwap_reversion_short,
             }
 
-            # Bollinger Bands
-            bb_period = 20
-            bb_std = 2
-            sma = data['close'].rolling(bb_period).mean().iloc[-1]
-            std = data['close'].rolling(bb_period).std().iloc[-1]
-            indicators["bb_upper"] = sma + (bb_std * std)
-            indicators["bb_lower"] = sma - (bb_std * std)
-            indicators["bb_middle"] = sma
-
-            # Support/Resistance (simple high/low)
+            # Support/Resistance (simple high/low for backward compatibility)
             recent_high = data['high'].rolling(20).max().iloc[-1]
             recent_low = data['low'].rolling(20).min().iloc[-1]
 

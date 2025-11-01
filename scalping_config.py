@@ -130,11 +130,20 @@ class ScalpingConfig:
         "adx": {"period": 7, "threshold": 18},  # >18 and rising = trend
         "vwap": {"session_start_hour": 8},  # Anchor at 08:00 GMT (London)
         "vwap_bands": {"std_devs": [1.0, 2.0]},  # ±1σ, ±2σ
+        "vwap_reversion": {"z_score_threshold": 2.0, "adx_max": 18},  # Mean reversion when ADX < 18
         "donchian": {"period": 15},  # 15-bar high/low (approx hold horizon)
         "bb_squeeze": {"bb_period": 20, "bb_std": 2.0, "kc_period": 20, "kc_mult": 1.5},
         "supertrend": {"atr_period": 7, "multiplier": 1.5},
         "atr": {"period": 5},
         "volume_spike": {"multiplier": 2.0},  # 2x average volume
+        # NEW: Professional techniques
+        "opening_range": {"range_minutes": 15, "london_start": 8, "ny_start": 13},
+        "liquidity_sweep": {"lookback": 2},  # Check 2 candles for close back inside
+        "inside_bar": {"min_bars": 3},  # Min 3 consecutive inside bars
+        "narrow_range": {"period": 4},  # NR4 pattern
+        "impulse": {"atr_multiplier": 1.5},  # Candle ≥ 1.5x ATR
+        "adr": {"period": 20},  # 20-day average daily range
+        "big_figures": {"levels_count": 5},  # Generate 5 levels above/below
     }
 
     # Remove slow/lagging indicators for scalping
@@ -157,31 +166,38 @@ class ScalpingConfig:
 
     # Entry logic based on GPT-5 + research recommendations
     ENTRY_TRIGGERS: Dict[str, bool] = {
-        # Trend confirmation (primary filter)
+        # Original triggers
         "ema_ribbon_aligned": True,     # EMA 3>6>12 (long) or 3<6<12 (short)
         "above_vwap": True,             # Price above VWAP (long) / below (short)
-
-        # Breakout triggers
         "donchian_breakout": True,      # Close outside Donchian channel
         "bb_squeeze_release": True,     # Squeeze → expansion
-
-        # Momentum confirmation
         "rsi_momentum": True,           # RSI(7) > 55 (long) or < 45 (short)
         "adx_trending": True,           # ADX(7) > 18 and rising
-
-        # Volume confirmation
         "volume_spike": True,           # 2x average volume
 
-        # Optional: Quick pullback entries
-        "ema_pullback": False,          # Pullback to EMA 6 in trend (lower priority)
+        # NEW: Professional techniques
+        "opening_range_breakout": True,  # ORB at London/NY opens
+        "liquidity_sweep_fade": True,    # Fade stop-run reversals (SFP)
+        "pivot_bounce": True,            # Bounce off S1/R1 levels
+        "pivot_break_retest": True,      # Break and retest S1/R1
+        "big_figure_bounce": True,       # Bounce at 00/25/50/75
+        "big_figure_break": True,        # Break through big figures
+        "inside_bar_breakout": True,     # Compression → expansion
+        "impulse_pullback": True,        # First pullback after impulse
+        "vwap_z_reversion": True,        # Mean reversion at 2σ (when ADX < 18)
+        "adr_extreme_fade": True,        # Fade when day's range > 1.2x ADR
+        "fix_flow_drift": False,         # Pre-fix drift (15:40-15:55) - RISKY
+        "fix_flow_fade": True,           # Post-fix fade (16:00-16:10)
     }
 
-    # Entry template (all must be true for TIER 1):
-    # LONG: Price > VWAP, EMA 3>6>12 (rising), ADX>18, RSI>55, Donchian breakout, Volume spike
-    # SHORT: Reverse conditions
+    # Entry template (original + new techniques):
+    # TIER 1 LONG: Price > VWAP, EMA 3>6>12 (rising), ADX>18, RSI>55, Donchian breakout, Volume spike
+    # TIER 1 ORB LONG: Price > OR_high, Price > VWAP, ADX > 20, within 20min of London/NY open
+    # TIER 1 SFP LONG: Liquidity sweep below Donchian, close back inside, RSI divergence
+    # TIER 1 PIVOT LONG: Price bounces at S1, VWAP distance > 1.5σ, RSI < 30, target PP/VWAP
 
     # Minimum confirmations required
-    MIN_ENTRY_CONFIRMATIONS: int = 4  # Need 4+ signals for entry (increased from 2)
+    MIN_ENTRY_CONFIRMATIONS: int = 3  # Need 3+ signals (reduced from 4 due to more signal types)
 
     # ============================================================================
     # EXIT RULES (Critical for Scalping)

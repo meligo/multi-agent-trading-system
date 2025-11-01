@@ -502,6 +502,273 @@ class ScalpingIndicators:
         }
 
 
+    @staticmethod
+    def calculate_floor_pivots(prev_high: float, prev_low: float, prev_close: float) -> Dict[str, float]:
+        """
+        Calculate classic floor pivot points from previous day's data.
+
+        Used by institutions and prop desks worldwide.
+
+        Args:
+            prev_high: Previous day's high
+            prev_low: Previous day's low
+            prev_close: Previous day's close
+
+        Returns:
+            Dict with PP, R1, R2, R3, S1, S2, S3
+        """
+        PP = (prev_high + prev_low + prev_close) / 3
+        R1 = (2 * PP) - prev_low
+        R2 = PP + (prev_high - prev_low)
+        R3 = prev_high + 2 * (PP - prev_low)
+        S1 = (2 * PP) - prev_high
+        S2 = PP - (prev_high - prev_low)
+        S3 = prev_low - 2 * (prev_high - PP)
+
+        return {
+            'PP': PP,
+            'R1': R1, 'R2': R2, 'R3': R3,
+            'S1': S1, 'S2': S2, 'S3': S3
+        }
+
+    @staticmethod
+    def calculate_big_figures(current_price: float, levels: int = 5) -> List[float]:
+        """
+        Calculate big figure levels (00/25/50/75) around current price.
+
+        Option barriers and psychological levels where orders cluster.
+
+        Args:
+            current_price: Current market price
+            levels: Number of levels above and below to generate
+
+        Returns:
+            List of big figure levels sorted ascending
+        """
+        # Round down to nearest 00
+        base = int(current_price * 10000) // 100 * 100
+
+        figures = []
+        # Generate levels below
+        for i in range(levels, 0, -1):
+            for offset in [0, 25, 50, 75]:
+                level = (base - (i * 100) + offset) / 10000
+                if level < current_price:
+                    figures.append(level)
+
+        # Generate levels at and above
+        for i in range(levels + 1):
+            for offset in [0, 25, 50, 75]:
+                level = (base + (i * 100) + offset) / 10000
+                if level >= current_price:
+                    figures.append(level)
+
+        return sorted(set(figures))
+
+    @staticmethod
+    def calculate_opening_range(df: pd.DataFrame, session_start_hour: int, range_minutes: int = 15) -> Dict[str, any]:
+        """
+        Calculate Opening Range for ORB strategy.
+
+        First N minutes of session define the range; breakouts traded.
+
+        Args:
+            df: DataFrame with OHLC data
+            session_start_hour: Hour session starts (8 for London, 13 for NY)
+            range_minutes: Minutes to define range (typically 5-15)
+
+        Returns:
+            Dict with OR_high, OR_low, OR_mid, OR_range
+        """
+        if df.empty or len(df) < range_minutes:
+            return {'OR_high': None, 'OR_low': None, 'OR_mid': None, 'OR_range': None}
+
+        # Find first candle at or after session start
+        session_candles = df[df.index.hour == session_start_hour]
+        if len(session_candles) < range_minutes:
+            return {'OR_high': None, 'OR_low': None, 'OR_mid': None, 'OR_range': None}
+
+        # Get first N minutes
+        or_data = session_candles.head(range_minutes)
+        OR_high = or_data['high'].max()
+        OR_low = or_data['low'].min()
+        OR_mid = (OR_high + OR_low) / 2
+        OR_range = OR_high - OR_low
+
+        return {
+            'OR_high': OR_high,
+            'OR_low': OR_low,
+            'OR_mid': OR_mid,
+            'OR_range': OR_range
+        }
+
+    @staticmethod
+    def detect_liquidity_sweep(df: pd.DataFrame, lookback: int = 2) -> pd.Series:
+        """
+        Detect liquidity sweeps (stop-run reversals / SFP).
+
+        Price pierces Donchian but closes back inside = trapped traders.
+
+        Args:
+            df: DataFrame with OHLC and donchian_upper/lower
+            lookback: Candles to check for close back inside (default 2)
+
+        Returns:
+            Series with 'sweep_long' (bullish) and 'sweep_short' (bearish) signals
+        """
+        if 'donchian_upper' not in df.columns or 'donchian_lower' not in df.columns:
+            df['liquidity_sweep_long'] = False
+            df['liquidity_sweep_short'] = False
+            return df
+
+        sweep_long = []
+        sweep_short = []
+
+        for i in range(len(df)):
+            long_sweep = False
+            short_sweep = False
+
+            if i >= lookback:
+                # Check if any recent candle broke below Donchian lower
+                # but current candle closed back inside
+                for j in range(1, lookback + 1):
+                    if (df['low'].iloc[i-j] < df['donchian_lower'].iloc[i-j] and
+                        df['close'].iloc[i] > df['donchian_lower'].iloc[i]):
+                        long_sweep = True
+                        break
+
+                # Check if any recent candle broke above Donchian upper
+                # but current candle closed back inside
+                for j in range(1, lookback + 1):
+                    if (df['high'].iloc[i-j] > df['donchian_upper'].iloc[i-j] and
+                        df['close'].iloc[i] < df['donchian_upper'].iloc[i]):
+                        short_sweep = True
+                        break
+
+            sweep_long.append(long_sweep)
+            sweep_short.append(short_sweep)
+
+        df['liquidity_sweep_long'] = sweep_long
+        df['liquidity_sweep_short'] = sweep_short
+
+        return df
+
+    @staticmethod
+    def detect_inside_bars(df: pd.DataFrame, min_bars: int = 3) -> pd.Series:
+        """
+        Detect inside bar compression patterns.
+
+        Multiple inside bars = volatility compression → expansion coming.
+
+        Args:
+            df: DataFrame with OHLC
+            min_bars: Minimum consecutive inside bars (default 3)
+
+        Returns:
+            Series indicating compression zones
+        """
+        inside_bar = (df['high'] <= df['high'].shift(1)) & (df['low'] >= df['low'].shift(1))
+
+        # Count consecutive inside bars
+        consecutive = inside_bar.astype(int).groupby((inside_bar != inside_bar.shift()).cumsum()).cumsum()
+
+        df['inside_bar_compression'] = consecutive >= min_bars
+
+        return df
+
+    @staticmethod
+    def detect_narrow_range(df: pd.DataFrame, period: int = 4) -> pd.Series:
+        """
+        Detect Narrow Range patterns (NR4, NR7, etc).
+
+        Narrowest range in N periods = compression → breakout.
+
+        Args:
+            df: DataFrame with OHLC
+            period: Lookback period (4 for NR4, 7 for NR7)
+
+        Returns:
+            Series indicating narrow range candles
+        """
+        df['range'] = df['high'] - df['low']
+        df['is_nr'] = df['range'] == df['range'].rolling(window=period).min()
+
+        return df
+
+    @staticmethod
+    def detect_impulse_move(df: pd.DataFrame, atr_multiplier: float = 1.5) -> pd.Series:
+        """
+        Detect impulse moves (large momentum candles).
+
+        Candle range ≥ 1.5x ATR = impulse → watch for pullback entry.
+
+        Args:
+            df: DataFrame with OHLC and 'atr' column
+            atr_multiplier: Multiplier for ATR (default 1.5)
+
+        Returns:
+            Series indicating impulse candles
+        """
+        if 'atr' not in df.columns:
+            # Calculate ATR if not present
+            df = ScalpingIndicators.calculate_adx(df, period=14)  # ADX also calculates ATR
+
+        df['candle_range'] = df['high'] - df['low']
+        df['is_impulse'] = df['candle_range'] >= (atr_multiplier * df['atr'])
+
+        # Also check if closes beyond Donchian
+        if 'donchian_upper' in df.columns and 'donchian_lower' in df.columns:
+            df['is_impulse'] = df['is_impulse'] & (
+                (df['close'] > df['donchian_upper']) |
+                (df['close'] < df['donchian_lower'])
+            )
+
+        return df
+
+    @staticmethod
+    def calculate_adr(df: pd.DataFrame, period: int = 20) -> float:
+        """
+        Calculate Average Daily Range over N days.
+
+        Used to detect when current day is overextended.
+
+        Args:
+            df: DataFrame with daily OHLC data
+            period: Lookback period (default 20 days)
+
+        Returns:
+            ADR value
+        """
+        daily_range = df['high'] - df['low']
+        adr = daily_range.rolling(window=period).mean().iloc[-1]
+        return adr
+
+    @staticmethod
+    def is_fix_window(current_time: datetime) -> Dict[str, bool]:
+        """
+        Check if current time is in London Fix or NY Options Cut window.
+
+        London Fix: 15:40-16:10 GMT
+        NY Options Cut: Also around 15:45-16:15 GMT (10:00 NY time)
+
+        Args:
+            current_time: Current datetime (UTC/GMT)
+
+        Returns:
+            Dict with 'in_fix_window', 'fix_type'
+        """
+        hour = current_time.hour
+        minute = current_time.minute
+
+        # London Fix window: 15:40-16:10 GMT
+        if hour == 15 and minute >= 40:
+            return {'in_fix_window': True, 'fix_type': 'london_fix_pre'}
+        if hour == 16 and minute <= 10:
+            return {'in_fix_window': True, 'fix_type': 'london_fix_post'}
+
+        return {'in_fix_window': False, 'fix_type': None}
+
+
 if __name__ == "__main__":
     # Test with sample data
     print("Scalping Indicators Module")
@@ -515,4 +782,13 @@ if __name__ == "__main__":
     print("  - SuperTrend(7, 1.5) for trailing stops")
     print("  - Bollinger Squeeze (BB vs KC)")
     print("  - Volume spike detection")
+    print("\nNEW - Professional Techniques:")
+    print("  - Floor Pivot Points (PP, S1/R1, S2/R2)")
+    print("  - Big Figure Levels (00/25/50/75)")
+    print("  - Opening Range Breakout (ORB)")
+    print("  - Liquidity Sweep / SFP detection")
+    print("  - Inside Bar / NR compression")
+    print("  - Impulse move detection")
+    print("  - ADR (Average Daily Range)")
+    print("  - Fix window detection (16:00 GMT)")
     print("="*80)
