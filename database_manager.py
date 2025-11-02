@@ -9,6 +9,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 import psycopg
 from psycopg import AsyncConnection
 from psycopg.rows import dict_row
@@ -30,41 +31,56 @@ class DatabaseManager:
 
     def __init__(
         self,
-        host: str = "localhost",
-        port: int = 5432,
-        database: str = "forex_scalping",
-        user: str = "postgres",
+        host: str = None,
+        port: int = None,
+        database: str = None,
+        user: str = None,
         password: str = None,
         min_size: int = 5,
-        max_size: int = 20
+        max_size: int = 20,
+        database_url: str = None
     ):
         """
         Initialize database manager with connection pool.
 
         Args:
-            host: Database host
+            host: Database host (or use database_url)
             port: Database port
             database: Database name
             user: Database user
             password: Database password
             min_size: Minimum pool size
             max_size: Maximum pool size
+            database_url: Full DATABASE_URL (overrides individual params)
         """
-        self.host = host
-        self.port = port
-        self.database = database
-        self.user = user
-        self.password = password or os.getenv("POSTGRES_PASSWORD", "postgres")
+        # Check for DATABASE_URL first
+        database_url = database_url or os.getenv("DATABASE_URL")
+
+        if database_url:
+            # Parse DATABASE_URL
+            parsed = urlparse(database_url)
+            self.host = parsed.hostname
+            self.port = parsed.port or 5432
+            self.database = parsed.path.lstrip('/')
+            self.user = parsed.username
+            self.password = parsed.password
+            logger.info(f"Using DATABASE_URL: {self.database}@{self.host}:{self.port}")
+        else:
+            # Use individual parameters
+            self.host = host or "localhost"
+            self.port = port or 5432
+            self.database = database or "forex_scalping"
+            self.user = user or "postgres"
+            self.password = password or os.getenv("POSTGRES_PASSWORD", "postgres")
+            logger.info(f"Using connection params: {self.database}@{self.host}:{self.port}")
 
         # Connection string
-        self.conn_string = f"host={host} port={port} dbname={database} user={user} password={self.password}"
+        self.conn_string = f"host={self.host} port={self.port} dbname={self.database} user={self.user} password={self.password}"
 
         # Connection pool (initialized lazily)
         self.pool: Optional[AsyncConnectionPool] = None
         self.min_size = min_size
         self.max_size = max_size
-
-        logger.info(f"DatabaseManager initialized for {database}@{host}:{port}")
 
     async def initialize(self):
         """Initialize the connection pool."""
