@@ -1,0 +1,478 @@
+-- ==============================================================================
+-- Multi-Agent Forex Scalping System - Database Schema
+-- PostgreSQL 14+ with TimescaleDB Extension
+-- ==============================================================================
+--
+-- This schema supports:
+-- - InsightSentry ULTRA (news, calendar, sentiment)
+-- - DataBento (CME futures L2 MBP-10, trades)
+-- - IG Markets (spot ticks, OHLC)
+-- - Finnhub (technical signals)
+-- - Order flow features (OFI, VPIN, microprice)
+-- - Multi-agent execution and positions
+--
+-- Expected data volume: ~1GB/day raw, 20-40GB steady state with compression
+-- ==============================================================================
+
+-- Enable TimescaleDB extension
+CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+
+-- ==============================================================================
+-- REFERENCE TABLES
+-- ==============================================================================
+
+-- Instruments: Central registry for all tradeable symbols
+CREATE TABLE IF NOT EXISTS instruments (
+    instrument_id SERIAL PRIMARY KEY,
+    provider TEXT NOT NULL, -- 'IG', 'DATABENTO', 'FINNHUB'
+    provider_symbol TEXT NOT NULL, -- 'EUR_USD', '6E', 'FX:EURUSD'
+    venue TEXT, -- 'GLBX', 'IG', 'LMAX'
+    asset_class TEXT NOT NULL, -- 'FX_SPOT', 'FX_FUTURES', 'COMMODITY'
+    currency TEXT NOT NULL, -- 'USD', 'EUR', 'GBP', 'JPY'
+    tick_size DOUBLE PRECISION,
+    lot_size DOUBLE PRECISION,
+    multiplier DOUBLE PRECISION, -- For futures (e.g., 125000 for 6E)
+    pip_size DOUBLE PRECISION, -- 0.0001 for EUR/USD, 0.01 for JPY pairs
+    timezone TEXT DEFAULT 'UTC',
+    mapping_group TEXT, -- Links futures to spot (e.g., '6E-EURUSD')
+    expiry TIMESTAMPTZ, -- NULL for spot, futures expiry date
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(provider, provider_symbol, expiry)
+);
+
+CREATE INDEX idx_instruments_mapping ON instruments(mapping_group) WHERE mapping_group IS NOT NULL;
+CREATE INDEX idx_instruments_active ON instruments(active, asset_class);
+
+-- Symbol Mapping: Links futures to spot pairs
+CREATE TABLE IF NOT EXISTS symbol_mapping (
+    mapping_group TEXT PRIMARY KEY,
+    spot_symbol TEXT NOT NULL, -- 'EUR_USD'
+    futures_symbol TEXT NOT NULL, -- '6E'
+    weight DOUBLE PRECISION DEFAULT 1.0,
+    correlation_lag_ms INTEGER, -- Expected lead/lag (e.g., 150ms)
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ==============================================================================
+-- MARKET DATA - IG SPOT
+-- ==============================================================================
+
+-- IG Spot Ticks: Raw bid/ask/mid from IG streaming
+CREATE TABLE IF NOT EXISTS ig_spot_ticks (
+    provider_event_ts TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    bid DOUBLE PRECISION NOT NULL,
+    ask DOUBLE PRECISION NOT NULL,
+    mid DOUBLE PRECISION NOT NULL,
+    bid_sz DOUBLE PRECISION, -- Usually not provided by IG
+    ask_sz DOUBLE PRECISION, -- Usually not provided by IG
+    source_msg_id TEXT, -- Unique message ID for deduplication
+    extras JSONB -- Additional fields from IG
+);
+
+SELECT create_hypertable('ig_spot_ticks', 'provider_event_ts',
+    chunk_time_interval => INTERVAL '6 hours',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_ig_ticks_instrument ON ig_spot_ticks(instrument_id, provider_event_ts DESC);
+CREATE UNIQUE INDEX idx_ig_ticks_dedupe ON ig_spot_ticks(instrument_id, provider_event_ts, mid)
+    WHERE source_msg_id IS NULL; -- Dedupe by instrument + time + mid
+
+-- IG OHLC 1-second continuous aggregate
+CREATE MATERIALIZED VIEW IF NOT EXISTS ig_ohlc_1s
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 second', provider_event_ts) AS time_bucket,
+    instrument_id,
+    FIRST(mid, provider_event_ts) AS open,
+    MAX(mid) AS high,
+    MIN(mid) AS low,
+    LAST(mid, provider_event_ts) AS close,
+    AVG(mid) AS vwap,
+    COUNT(*) AS n_ticks
+FROM ig_spot_ticks
+GROUP BY time_bucket, instrument_id
+WITH NO DATA;
+
+SELECT add_continuous_aggregate_policy('ig_ohlc_1s',
+    start_offset => INTERVAL '1 hour',
+    end_offset => INTERVAL '1 minute',
+    schedule_interval => INTERVAL '1 minute',
+    if_not_exists => TRUE
+);
+
+-- ==============================================================================
+-- MARKET DATA - DATABENTO CME FUTURES
+-- ==============================================================================
+
+-- CME Trades: Execution data from DataBento
+CREATE TABLE IF NOT EXISTS cme_trades (
+    provider_event_ts TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    price DOUBLE PRECISION NOT NULL,
+    size DOUBLE PRECISION NOT NULL,
+    side CHAR(1) NOT NULL, -- 'B' = buy aggressor, 'S' = sell aggressor
+    trade_id TEXT NOT NULL,
+    seq BIGINT NOT NULL,
+    extras JSONB
+);
+
+SELECT create_hypertable('cme_trades', 'provider_event_ts',
+    chunk_time_interval => INTERVAL '6 hours',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_cme_trades_instrument ON cme_trades(instrument_id, provider_event_ts DESC);
+CREATE UNIQUE INDEX idx_cme_trades_id ON cme_trades(instrument_id, seq);
+
+-- CME MBP-10 Events: Incremental order book updates
+CREATE TABLE IF NOT EXISTS cme_mbp10_events (
+    provider_event_ts TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    seq BIGINT NOT NULL,
+    action SMALLINT NOT NULL, -- 0=add, 1=modify, 2=delete, 3=clear
+    side CHAR(1) NOT NULL, -- 'B' = bid, 'A' = ask
+    level SMALLINT, -- 0-9 for top 10 levels
+    price DOUBLE PRECISION,
+    size DOUBLE PRECISION,
+    extras JSONB
+);
+
+SELECT create_hypertable('cme_mbp10_events', 'provider_event_ts',
+    chunk_time_interval => INTERVAL '3 hours',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_cme_mbp10_instrument ON cme_mbp10_events(instrument_id, provider_event_ts DESC);
+CREATE UNIQUE INDEX idx_cme_mbp10_seq ON cme_mbp10_events(instrument_id, seq, side, level);
+
+-- CME MBP-10 Book Snapshots: Periodic full order book state
+CREATE TABLE IF NOT EXISTS cme_mbp10_book (
+    provider_event_ts TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    bid_px DOUBLE PRECISION[10], -- Top 10 bid prices
+    bid_sz DOUBLE PRECISION[10], -- Top 10 bid sizes
+    ask_px DOUBLE PRECISION[10], -- Top 10 ask prices
+    ask_sz DOUBLE PRECISION[10], -- Top 10 ask sizes
+    best_bid DOUBLE PRECISION,
+    best_ask DOUBLE PRECISION,
+    mid DOUBLE PRECISION,
+    spread DOUBLE PRECISION
+);
+
+SELECT create_hypertable('cme_mbp10_book', 'provider_event_ts',
+    chunk_time_interval => INTERVAL '6 hours',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_cme_book_instrument ON cme_mbp10_book(instrument_id, provider_event_ts DESC);
+
+-- ==============================================================================
+-- NEWS & ECONOMIC CALENDAR - INSIGHTSENTRY
+-- ==============================================================================
+
+-- News Events: Breaking news from InsightSentry
+CREATE TABLE IF NOT EXISTS iss_news_events (
+    provider_event_ts TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    event_id TEXT PRIMARY KEY,
+    headline TEXT NOT NULL,
+    body TEXT,
+    categories TEXT[], -- e.g., ['FOREX', 'CENTRAL_BANK']
+    symbols TEXT[], -- e.g., ['EUR/USD', 'USD/JPY']
+    severity TEXT NOT NULL, -- 'low', 'medium', 'high'
+    sentiment_score DOUBLE PRECISION, -- -1.0 to 1.0
+    url TEXT,
+    language TEXT DEFAULT 'en',
+    source TEXT
+);
+
+CREATE INDEX idx_news_time ON iss_news_events(provider_event_ts DESC);
+CREATE INDEX idx_news_symbols ON iss_news_events USING GIN(symbols);
+CREATE INDEX idx_news_severity ON iss_news_events(severity, provider_event_ts DESC);
+
+-- Economic Calendar: Scheduled and released events
+CREATE TABLE IF NOT EXISTS iss_econ_calendar (
+    scheduled_time TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    event_id TEXT PRIMARY KEY,
+    country TEXT NOT NULL, -- 'US', 'EU', 'GB', 'JP'
+    currency TEXT NOT NULL, -- 'USD', 'EUR', 'GBP', 'JPY'
+    event_name TEXT NOT NULL, -- 'NFP', 'CPI', 'FOMC', 'BOE Rate'
+    importance TEXT NOT NULL, -- 'low', 'medium', 'high'
+    forecast DOUBLE PRECISION,
+    previous DOUBLE PRECISION,
+    actual DOUBLE PRECISION, -- NULL until released
+    status TEXT DEFAULT 'scheduled', -- 'scheduled', 'released', 'revised', 'canceled'
+    revision_of TEXT REFERENCES iss_econ_calendar(event_id),
+    notes TEXT
+);
+
+CREATE INDEX idx_calendar_time ON iss_econ_calendar(scheduled_time);
+CREATE INDEX idx_calendar_currency ON iss_econ_calendar(currency, scheduled_time);
+CREATE INDEX idx_calendar_importance ON iss_econ_calendar(importance, scheduled_time);
+
+-- Gating State: Trading restrictions due to news/events
+CREATE TABLE IF NOT EXISTS gating_state (
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    start_time TIMESTAMPTZ NOT NULL,
+    end_time TIMESTAMPTZ NOT NULL,
+    reason TEXT NOT NULL, -- 'NFP', 'breaking_news', 'high_volatility'
+    window_minutes INTEGER NOT NULL, -- How long the gate is active
+    state TEXT NOT NULL, -- 'active', 'scheduled', 'cleared'
+    event_id TEXT, -- Link to iss_econ_calendar or iss_news_events
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (instrument_id, start_time)
+);
+
+CREATE INDEX idx_gating_active ON gating_state(instrument_id, state, end_time);
+
+-- ==============================================================================
+-- DERIVED FEATURES
+-- ==============================================================================
+
+-- Microstructure Features: Order flow imbalance, microprice, queue imbalance
+CREATE TABLE IF NOT EXISTS microstructure_features (
+    provider_event_ts TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    window_ms INTEGER NOT NULL, -- Feature window (e.g., 250ms)
+    mid DOUBLE PRECISION,
+    spread DOUBLE PRECISION,
+    microprice DOUBLE PRECISION, -- (best_ask*bid_sz + best_bid*ask_sz) / (bid_sz + ask_sz)
+    queue_imbalance DOUBLE PRECISION, -- (bid_sz - ask_sz) / (bid_sz + ask_sz)
+    ofi DOUBLE PRECISION, -- Order Flow Imbalance
+    depth_imbalance DOUBLE PRECISION, -- Depth across top N levels
+    trade_imbalance DOUBLE PRECISION, -- Buy volume - sell volume
+    realized_vol DOUBLE PRECISION, -- Rolling realized volatility
+    extras JSONB
+);
+
+SELECT create_hypertable('microstructure_features', 'provider_event_ts',
+    chunk_time_interval => INTERVAL '6 hours',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_features_instrument ON microstructure_features(instrument_id, provider_event_ts DESC);
+
+-- VPIN Features: Volume-Synchronized Probability of Informed Trading
+CREATE TABLE IF NOT EXISTS vpin_features (
+    bucket_end_ts TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    bucket_volume DOUBLE PRECISION NOT NULL,
+    buy_volume DOUBLE PRECISION NOT NULL,
+    sell_volume DOUBLE PRECISION NOT NULL,
+    vpin DOUBLE PRECISION NOT NULL, -- abs(buy - sell) / bucket_volume
+    window_buckets INTEGER NOT NULL, -- Number of buckets in rolling window (e.g., 50)
+    method TEXT DEFAULT 'core' -- 'core' or 'kernel'
+);
+
+SELECT create_hypertable('vpin_features', 'bucket_end_ts',
+    chunk_time_interval => INTERVAL '12 hours',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_vpin_instrument ON vpin_features(instrument_id, bucket_end_ts DESC);
+
+-- Cross-Asset Alignment: Futures-to-spot lag estimation
+CREATE TABLE IF NOT EXISTS cross_asset_alignment (
+    as_of_ts TIMESTAMPTZ NOT NULL,
+    group_id TEXT NOT NULL, -- mapping_group (e.g., '6E-EURUSD')
+    lag_ms INTEGER NOT NULL, -- Estimated lead/lag in milliseconds
+    correlation DOUBLE PRECISION, -- Cross-correlation coefficient
+    quality_score DOUBLE PRECISION, -- Confidence in lag estimate (0-1)
+    sample_size INTEGER, -- Number of samples used
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (group_id, as_of_ts)
+);
+
+CREATE INDEX idx_alignment_time ON cross_asset_alignment(group_id, as_of_ts DESC);
+
+-- ==============================================================================
+-- AGENTS & EXECUTION
+-- ==============================================================================
+
+-- Agent Signals: Outputs from multi-agent analysis
+CREATE TABLE IF NOT EXISTS agent_signals (
+    provider_event_ts TIMESTAMPTZ NOT NULL,
+    recv_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    agent_id TEXT NOT NULL, -- 'FastMomentumAgent', 'OrderBookMicrostructure', etc.
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    signal_type TEXT NOT NULL, -- 'ENTRY_LONG', 'EXIT', 'RISK_OFF', etc.
+    value DOUBLE PRECISION, -- Signal strength or price
+    confidence DOUBLE PRECISION, -- 0-1 confidence score
+    reason TEXT,
+    gating_state_at_emit TEXT, -- Was trading gated when signal emitted?
+    trace_id TEXT -- LangSmith trace ID
+);
+
+SELECT create_hypertable('agent_signals', 'provider_event_ts',
+    chunk_time_interval => INTERVAL '12 hours',
+    if_not_exists => TRUE
+);
+
+CREATE INDEX idx_signals_agent ON agent_signals(agent_id, provider_event_ts DESC);
+CREATE INDEX idx_signals_instrument ON agent_signals(instrument_id, provider_event_ts DESC);
+
+-- Orders: All order submissions
+CREATE TABLE IF NOT EXISTS orders (
+    send_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ack_ts TIMESTAMPTZ,
+    order_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    side TEXT NOT NULL, -- 'BUY', 'SELL'
+    qty DOUBLE PRECISION NOT NULL,
+    price DOUBLE PRECISION,
+    order_type TEXT NOT NULL, -- 'MARKET', 'LIMIT', 'STOP'
+    tif TEXT DEFAULT 'GTC', -- Time in force
+    status TEXT NOT NULL, -- 'PENDING', 'ACCEPTED', 'FILLED', 'REJECTED', 'CANCELED'
+    error_code TEXT,
+    error_message TEXT,
+    trace_id TEXT
+);
+
+CREATE INDEX idx_orders_time ON orders(send_ts DESC);
+CREATE INDEX idx_orders_status ON orders(status, send_ts DESC);
+CREATE INDEX idx_orders_instrument ON orders(instrument_id, send_ts DESC);
+
+-- Fills: Execution confirmations
+CREATE TABLE IF NOT EXISTS fills (
+    fill_ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    fill_id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES orders(order_id),
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    price DOUBLE PRECISION NOT NULL,
+    qty DOUBLE PRECISION NOT NULL,
+    fee DOUBLE PRECISION,
+    slippage DOUBLE PRECISION, -- Actual price - expected price
+    liquidity TEXT, -- 'MAKER', 'TAKER'
+    extras JSONB
+);
+
+CREATE INDEX idx_fills_time ON fills(fill_ts DESC);
+CREATE INDEX idx_fills_order ON fills(order_id);
+
+-- Positions: Open and closed positions
+CREATE TABLE IF NOT EXISTS positions (
+    pos_id TEXT PRIMARY KEY,
+    instrument_id INTEGER NOT NULL REFERENCES instruments(instrument_id),
+    open_ts TIMESTAMPTZ NOT NULL,
+    close_ts TIMESTAMPTZ,
+    side TEXT NOT NULL, -- 'LONG', 'SHORT'
+    qty DOUBLE PRECISION NOT NULL,
+    avg_open_price DOUBLE PRECISION NOT NULL,
+    avg_close_price DOUBLE PRECISION,
+    realized_pnl DOUBLE PRECISION,
+    unrealized_pnl DOUBLE PRECISION,
+    max_adverse_excursion DOUBLE PRECISION, -- Worst drawdown during position
+    max_favorable_excursion DOUBLE PRECISION, -- Best profit during position
+    holding_time_seconds INTEGER,
+    tags JSONB -- Metadata: agent_id, strategy, etc.
+);
+
+CREATE INDEX idx_positions_time ON positions(open_ts DESC);
+CREATE INDEX idx_positions_instrument ON positions(instrument_id, open_ts DESC);
+CREATE INDEX idx_positions_open ON positions(instrument_id) WHERE close_ts IS NULL;
+
+-- ==============================================================================
+-- TIMESCALEDB COMPRESSION & RETENTION POLICIES
+-- ==============================================================================
+
+-- Compress raw ticks after 30 minutes
+SELECT add_compression_policy('ig_spot_ticks', INTERVAL '30 minutes', if_not_exists => TRUE);
+SELECT add_compression_policy('cme_mbp10_events', INTERVAL '30 minutes', if_not_exists => TRUE);
+SELECT add_compression_policy('cme_trades', INTERVAL '30 minutes', if_not_exists => TRUE);
+
+-- Compress book snapshots after 1 hour
+SELECT add_compression_policy('cme_mbp10_book', INTERVAL '1 hour', if_not_exists => TRUE);
+
+-- Compress features after 1 hour
+SELECT add_compression_policy('microstructure_features', INTERVAL '1 hour', if_not_exists => TRUE);
+SELECT add_compression_policy('vpin_features', INTERVAL '1 hour', if_not_exists => TRUE);
+
+-- Retain raw LOB events for 7 days, then drop
+SELECT add_retention_policy('cme_mbp10_events', INTERVAL '7 days', if_not_exists => TRUE);
+
+-- Retain raw spot ticks for 14 days
+SELECT add_retention_policy('ig_spot_ticks', INTERVAL '14 days', if_not_exists => TRUE);
+
+-- Retain features for 90 days
+SELECT add_retention_policy('microstructure_features', INTERVAL '90 days', if_not_exists => TRUE);
+SELECT add_retention_policy('vpin_features', INTERVAL '90 days', if_not_exists => TRUE);
+
+-- ==============================================================================
+-- SEED DATA: Instruments & Mappings
+-- ==============================================================================
+
+-- Insert IG Spot instruments
+INSERT INTO instruments (provider, provider_symbol, asset_class, currency, pip_size, mapping_group, active)
+VALUES
+    ('IG', 'EUR_USD', 'FX_SPOT', 'USD', 0.0001, '6E-EURUSD', true),
+    ('IG', 'GBP_USD', 'FX_SPOT', 'USD', 0.0001, '6B-GBPUSD', true),
+    ('IG', 'USD_JPY', 'FX_SPOT', 'JPY', 0.01, '6J-USDJPY', true)
+ON CONFLICT (provider, provider_symbol, expiry) DO NOTHING;
+
+-- Insert DataBento CME Futures (front month, update expiry monthly)
+INSERT INTO instruments (provider, provider_symbol, venue, asset_class, currency, multiplier, pip_size, mapping_group, expiry, active)
+VALUES
+    ('DATABENTO', '6E', 'GLBX', 'FX_FUTURES', 'USD', 125000, 0.00005, '6E-EURUSD', '2025-03-14', true),
+    ('DATABENTO', '6B', 'GLBX', 'FX_FUTURES', 'USD', 62500, 0.0001, '6B-GBPUSD', '2025-03-14', true),
+    ('DATABENTO', '6J', 'GLBX', 'FX_FUTURES', 'USD', 12500000, 0.000001, '6J-USDJPY', '2025-03-14', true)
+ON CONFLICT (provider, provider_symbol, expiry) DO NOTHING;
+
+-- Insert symbol mappings
+INSERT INTO symbol_mapping (mapping_group, spot_symbol, futures_symbol, correlation_lag_ms)
+VALUES
+    ('6E-EURUSD', 'EUR_USD', '6E', 150),
+    ('6B-GBPUSD', 'GBP_USD', '6B', 150),
+    ('6J-USDJPY', 'USD_JPY', '6J', 150)
+ON CONFLICT (mapping_group) DO NOTHING;
+
+-- ==============================================================================
+-- UTILITY VIEWS
+-- ==============================================================================
+
+-- Latest gating state per instrument
+CREATE OR REPLACE VIEW v_current_gating AS
+SELECT DISTINCT ON (instrument_id)
+    g.*,
+    i.provider_symbol
+FROM gating_state g
+JOIN instruments i ON g.instrument_id = i.instrument_id
+WHERE g.state = 'active' AND g.end_time > NOW()
+ORDER BY instrument_id, start_time DESC;
+
+-- Open positions summary
+CREATE OR REPLACE VIEW v_open_positions AS
+SELECT
+    p.pos_id,
+    i.provider_symbol,
+    p.side,
+    p.qty,
+    p.avg_open_price,
+    p.unrealized_pnl,
+    EXTRACT(EPOCH FROM (NOW() - p.open_ts)) AS holding_seconds,
+    p.tags
+FROM positions p
+JOIN instruments i ON p.instrument_id = i.instrument_id
+WHERE p.close_ts IS NULL;
+
+-- ==============================================================================
+-- DONE
+-- ==============================================================================
+
+\echo '✅ Database schema created successfully!'
+\echo 'Expected storage: ~1GB/day raw, 20-40GB steady state with compression'
+\echo 'Next steps:'
+\echo '  1. Install Python dependencies: psycopg[binary,pool], timescaledb'
+\echo '  2. Implement InsightSentry REST client'
+\echo '  3. Implement DataBento streaming client'
+\echo '  4. Build feature computation engine'
