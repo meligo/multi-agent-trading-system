@@ -294,12 +294,12 @@ async def initialize_enhanced_services():
                 for pair in ScalpingConfig.SCALPING_PAIRS:
                     try:
                         # Query last 100 1-minute candles from database
-                        # Join with instruments table to get instrument_id from symbol
+                        # Join with instruments table to get instrument_id from provider_symbol
                         query = """
                         SELECT c.provider_event_ts, c.open, c.high, c.low, c.close, c.volume
                         FROM ig_candles c
                         INNER JOIN instruments i ON c.instrument_id = i.instrument_id
-                        WHERE i.symbol = %s AND i.provider = 'IG' AND c.timeframe = '1'
+                        WHERE i.provider_symbol = %s AND i.provider = 'IG' AND c.timeframe = '1'
                         ORDER BY c.provider_event_ts DESC
                         LIMIT 100
                         """
