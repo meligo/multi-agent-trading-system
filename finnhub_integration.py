@@ -13,6 +13,7 @@ API Documentation: https://finnhub.io/docs/api/
 import os
 import time
 import requests
+import asyncio
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from forex_config import ForexConfig
@@ -29,12 +30,14 @@ class FinnhubIntegration:
     - Caching to avoid rate limits (60 calls/min free tier)
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, db_manager=None, persistence_manager=None):
         """
         Initialize Finnhub integration.
 
         Args:
             api_key: Finnhub API key (defaults to config)
+            db_manager: DatabaseManager instance (optional)
+            persistence_manager: DataPersistenceManager instance (optional)
         """
         self.api_key = api_key or ForexConfig.FINNHUB_API_KEY
         self.base_url = "https://finnhub.io/api/v1"
@@ -49,6 +52,11 @@ class FinnhubIntegration:
         # Cache to avoid rate limits
         self._cache = {}
         self._cache_ttl = ForexConfig.FINNHUB_CACHE_SECONDS
+
+        # Database persistence
+        self.db_manager = db_manager
+        self.persistence = persistence_manager
+        self.persist_enabled = persistence_manager is not None
 
     def _get_from_cache(self, key: str) -> Optional[Dict]:
         """Get cached result if still valid."""
@@ -199,6 +207,27 @@ class FinnhubIntegration:
         # Cache result
         self._set_cache(cache_key, result)
 
+        # Save to database if persistence enabled
+        if self.persist_enabled:
+            try:
+                asyncio.create_task(self.persistence.save_finnhub_aggregate_indicators(
+                    symbol=pair,
+                    timestamp=datetime.utcnow(),
+                    timeframe=timeframe,
+                    buy_count=counts.get('buy', 0),
+                    sell_count=counts.get('sell', 0),
+                    neutral_count=counts.get('neutral', 0),
+                    total_indicators=total,
+                    consensus=consensus,
+                    confidence=confidence,
+                    signal=ta.get('signal', 'neutral'),
+                    adx=data.get('trend', {}).get('adx'),
+                    trending=data.get('trend', {}).get('trending'),
+                    extras=data.get('trend', {})
+                ))
+            except Exception as e:
+                print(f"⚠️  Failed to save Finnhub aggregate indicators: {e}")
+
         return result
 
     def get_patterns(self, pair: str, timeframe: str = "D") -> Dict:
@@ -285,6 +314,18 @@ class FinnhubIntegration:
         # Cache result
         self._set_cache(cache_key, result)
 
+        # Save to database if persistence enabled
+        if self.persist_enabled and patterns:
+            try:
+                asyncio.create_task(self.persistence.save_finnhub_patterns(
+                    symbol=pair,
+                    timestamp=datetime.utcnow(),
+                    timeframe=timeframe,
+                    patterns=patterns
+                ))
+            except Exception as e:
+                print(f"⚠️  Failed to save Finnhub patterns: {e}")
+
         return result
 
     def get_support_resistance(self, pair: str) -> Dict:
@@ -322,14 +363,31 @@ class FinnhubIntegration:
         if not data:
             return {'support': [], 'resistance': [], 'has_levels': False, 'error': 'API request failed'}
 
+        # Parse support/resistance (Finnhub returns all levels together)
+        levels = data.get('levels', [])
+        support_levels = levels[:len(levels)//2] if levels else []
+        resistance_levels = levels[len(levels)//2:] if levels else []
+
         result = {
-            'support': data.get('levels', []),
-            'resistance': data.get('levels', []),
-            'has_levels': len(data.get('levels', [])) > 0
+            'support': support_levels,
+            'resistance': resistance_levels,
+            'has_levels': len(levels) > 0
         }
 
         # Cache result
         self._set_cache(cache_key, result)
+
+        # Save to database if persistence enabled
+        if self.persist_enabled and levels:
+            try:
+                asyncio.create_task(self.persistence.save_finnhub_support_resistance(
+                    symbol=pair,
+                    timestamp=datetime.utcnow(),
+                    support_levels=support_levels,
+                    resistance_levels=resistance_levels
+                ))
+            except Exception as e:
+                print(f"⚠️  Failed to save Finnhub S/R levels: {e}")
 
         return result
 

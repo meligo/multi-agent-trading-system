@@ -57,16 +57,15 @@ def test_pair(pair: str):
         engine = ScalpingEngine()
 
         # Set up data fetcher
-        from forex_data import ForexAnalyzer
+        from unified_data_fetcher import UnifiedDataFetcher
+        from data_hub import get_data_hub_from_env
         from scalping_config import ScalpingConfig
 
-        data_fetcher = ForexAnalyzer(
-            api_key=ScalpingConfig.IG_API_KEY,
-            username=ScalpingConfig.IG_USERNAME,
-            password=ScalpingConfig.IG_PASSWORD,
-            acc_number=ScalpingConfig.IG_ACC_NUMBER,
-            demo=ScalpingConfig.IG_DEMO
-        )
+        # Initialize DataHub
+        data_hub = get_data_hub_from_env()
+
+        # Initialize unified data fetcher
+        data_fetcher = UnifiedDataFetcher(data_hub=data_hub)
         engine.set_data_fetcher(data_fetcher)
 
         # Run analysis

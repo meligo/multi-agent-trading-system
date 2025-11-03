@@ -62,7 +62,7 @@ class ServiceManager:
                 # Start WebSocket collector as subprocess
                 # Using DEVNULL to prevent output from cluttering dashboard
                 process = subprocess.Popen(
-                    ['python', 'websocket_collector.py'],
+                    ['python', 'websocket_collector_modern.py'],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True  # Detach from parent
@@ -161,6 +161,36 @@ class ServiceManager:
             }
 
             return status
+
+    def get_websocket_status(self) -> Dict:
+        """
+        Get WebSocket collector status.
+
+        Returns:
+            Dictionary with websocket status info
+        """
+        with self.lock:
+            if 'websocket' in self.services:
+                ws = self.services['websocket']
+                return {
+                    'running': ws['status'] == 'running',
+                    'status': ws['status'],
+                    'started_at': ws.get('started_at'),
+                    'uptime': self._get_uptime(ws.get('started_at')),
+                    'reason': ws.get('reason'),
+                    'pid': ws.get('pid'),
+                    'pairs_subscribed': 3 if ws['status'] == 'running' else 0
+                }
+            else:
+                return {
+                    'running': False,
+                    'status': 'not_started',
+                    'started_at': None,
+                    'uptime': None,
+                    'reason': 'Not initialized',
+                    'pid': None,
+                    'pairs_subscribed': 0
+                }
 
     def _is_process_alive(self, pid: Optional[int]) -> bool:
         """Check if a process is still running."""

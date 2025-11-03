@@ -1,11 +1,12 @@
 """
-InsightSentry ULTRA Client (RapidAPI)
-Fetches economic calendar, news, and sentiment for forex scalping
+InsightSentry MEGA Client (RapidAPI)
+Fetches economic calendar, news, and market data for forex scalping
 
-Plan: ULTRA ($25/month)
-- 12 WebSocket connections available
-- REST API for historical/scheduled data
-- WebSocket for real-time streaming (see insightsentry_websocket.py)
+Plan: MEGA ($50/month)
+- 10 WebSocket connections/day (hard limit)
+- 600,000 REST API requests/month (60/min rate limit)
+- REST API for economic calendar and news
+- WebSocket for real-time streaming (conserve usage)
 """
 
 import os
@@ -26,13 +27,14 @@ logger = logging.getLogger(__name__)
 
 class InsightSentryClient:
     """
-    REST client for InsightSentry ULTRA API via RapidAPI.
+    REST client for InsightSentry MEGA API via RapidAPI.
 
-    Endpoints:
-    - /v2/calendar/economic - Economic calendar events
-    - /v2/news - Breaking news
-    - /v2/sentiment - Market sentiment data
-    - /v2/symbols/{symbol}/info - Symbol information
+    Endpoints (v3):
+    - /v3/calendar/events - Economic calendar events (NFP, CPI, FOMC, etc.)
+    - /v3/newsfeed - Breaking financial news
+    - /v3/calendar/earnings - Earnings reports
+    - /v3/calendar/dividends - Dividend schedules
+    - /v3/symbols/search - Symbol search
     """
 
     BASE_URL = "https://insightsentry.p.rapidapi.com"
@@ -115,33 +117,48 @@ class InsightSentryClient:
         min_impact: str = "high"
     ) -> List[Dict[str, Any]]:
         """
-        Fetch economic calendar events.
+        Fetch economic calendar events from v3 API.
 
         Args:
-            from_date: Start date (default: now)
-            to_date: End date (default: +7 days)
+            from_date: Start date (default: now) - ignored in v3, uses weeks instead
+            to_date: End date (default: +7 days) - ignored in v3, uses weeks instead
             countries: Country codes (US, EU, GB, JP, etc.)
             min_impact: Minimum impact ('low', 'medium', 'high')
 
         Returns:
             List of calendar events
         """
-        if from_date is None:
-            from_date = datetime.utcnow()
-        if to_date is None:
-            to_date = from_date + timedelta(days=7)
+        # v3 API uses weeks ahead (w) instead of date ranges
+        weeks_ahead = 1
+        if to_date:
+            days_ahead = (to_date - datetime.utcnow()).days
+            weeks_ahead = max(1, min(4, (days_ahead + 6) // 7))  # Round up, max 4 weeks
 
         params = {
-            "countries": ",".join(countries),
-            "minImpact": min_impact,
-            "from": from_date.isoformat(),
-            "to": to_date.isoformat()
+            "w": weeks_ahead,
+            "importance": min_impact
         }
 
+        # v3 API only supports single country filter, so we'll request all and filter
+        # If single country specified, use it
+        if len(countries) == 1:
+            params["country"] = countries[0]
+
         try:
-            data = await self._request("/v2/calendar/economic", params)
-            events = data.get("events", [])
-            logger.info(f"Fetched {len(events)} economic calendar events")
+            data = await self._request("/v3/calendar/events", params)
+            all_events = data.get("data", [])
+
+            # Filter by countries if multiple specified
+            if len(countries) > 1:
+                events = [e for e in all_events if e.get("country") in countries]
+            else:
+                events = all_events
+
+            # Filter by importance (if not already done server-side)
+            if min_impact:
+                events = [e for e in events if e.get("importance") == min_impact]
+
+            logger.info(f"Fetched {len(events)} economic calendar events (filtered from {len(all_events)})")
             return events
         except Exception as e:
             logger.error(f"Failed to fetch economic calendar: {e}")
@@ -186,31 +203,37 @@ class InsightSentryClient:
         limit: int = 100
     ) -> List[Dict[str, Any]]:
         """
-        Fetch breaking news.
+        Fetch breaking news from v3 newsfeed.
 
         Args:
-            categories: News categories (e.g., ['FOREX', 'CENTRAL_BANK'])
-            symbols: Symbols to filter (e.g., ['EUR/USD', 'GBP/USD'])
-            languages: Language codes (e.g., ['en'])
-            limit: Maximum number of news items
+            categories: News categories (not used in v3, filtered client-side)
+            symbols: Symbols to filter (filtered client-side from related_symbols)
+            languages: Language codes (not used in v3)
+            limit: Maximum number of news items (capped at 500 per page)
 
         Returns:
             List of news events
         """
         params = {
-            "languages": ",".join(languages),
-            "limit": limit
+            "page": 1
         }
 
-        if categories:
-            params["categories"] = ",".join(categories)
-        if symbols:
-            params["symbols"] = ",".join(symbols)
-
         try:
-            data = await self._request("/v2/news", params)
-            news_items = data.get("news", [])
-            logger.info(f"Fetched {len(news_items)} news items")
+            data = await self._request("/v3/newsfeed", params)
+            all_news = data.get("data", [])
+
+            # Filter by symbols if specified (check related_symbols field)
+            news_items = all_news
+            if symbols:
+                news_items = [
+                    item for item in all_news
+                    if any(sym in item.get("related_symbols", []) for sym in symbols)
+                ]
+
+            # Limit results
+            news_items = news_items[:limit]
+
+            logger.info(f"Fetched {len(news_items)} news items (filtered from {len(all_news)})")
             return news_items
         except Exception as e:
             logger.error(f"Failed to fetch news: {e}")
@@ -238,7 +261,7 @@ class InsightSentryClient:
         )
 
     # ========================================================================
-    # SENTIMENT
+    # SENTIMENT (Not available in v3)
     # ========================================================================
 
     async def get_sentiment(
@@ -249,46 +272,44 @@ class InsightSentryClient:
         """
         Fetch market sentiment data.
 
+        **NOTE**: Sentiment endpoint not available in v3 API.
+        Returns empty dict for backward compatibility.
+
         Args:
             symbols: Symbols to query (e.g., ['FX:EURUSD'])
             timeframe: Timeframe for sentiment ('1h', '4h', '1d')
 
         Returns:
-            Sentiment data
+            Empty dict (sentiment not available in v3)
         """
-        params = {
-            "timeframe": timeframe
-        }
-
-        if symbols:
-            params["symbols"] = ",".join(symbols)
-
-        try:
-            data = await self._request("/v2/sentiment", params)
-            logger.info(f"Fetched sentiment data for {len(symbols or [])} symbols")
-            return data
-        except Exception as e:
-            logger.error(f"Failed to fetch sentiment: {e}")
-            return {}
+        logger.warning("Sentiment endpoint not available in InsightSentry v3 API")
+        return {}
 
     # ========================================================================
-    # SYMBOL INFO
+    # SYMBOL INFO (v3 uses search)
     # ========================================================================
 
     async def get_symbol_info(self, symbol: str) -> Dict[str, Any]:
         """
-        Get detailed information about a symbol.
+        Get detailed information about a symbol using v3 search.
 
         Args:
-            symbol: Symbol in InsightSentry format (e.g., 'FX:EURUSD', 'NYSE:MS')
+            symbol: Symbol to search (e.g., 'EURUSD', 'AAPL')
 
         Returns:
-            Symbol information
+            Symbol information (first match from search)
         """
         try:
-            data = await self._request(f"/v2/symbols/{symbol}/info")
-            logger.info(f"Fetched info for {symbol}")
-            return data
+            params = {"query": symbol}
+            data = await self._request("/v3/symbols/search", params)
+            results = data.get("data", [])
+
+            if results:
+                logger.info(f"Found {len(results)} matches for {symbol}")
+                return results[0]  # Return first match
+            else:
+                logger.warning(f"No results found for {symbol}")
+                return {}
         except Exception as e:
             logger.error(f"Failed to fetch symbol info: {e}")
             return {}

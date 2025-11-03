@@ -9,10 +9,21 @@ NO quota usage - runs indefinitely!
 
 import time
 import sys
-from datetime import datetime
-from typing import Dict, List
+import asyncio
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+from collections import defaultdict
 from forex_config import ForexConfig
 from forex_database import ForexDatabase
+
+# Import DataHub and models
+try:
+    from data_hub import get_data_hub_from_env
+    from market_data_models import Tick, Candle
+    DATA_HUB_AVAILABLE = True
+except ImportError:
+    DATA_HUB_AVAILABLE = False
+    print("⚠️  DataHub not available - running in legacy mode")
 
 # Check if trading_ig is installed
 try:
@@ -37,18 +48,39 @@ class ForexWebSocketCollector:
     - Runs 24/5 during forex trading hours
     """
 
-    def __init__(self):
-        """Initialize WebSocket collector."""
+    def __init__(self, db_manager=None, persistence_manager=None, data_hub=None):
+        """Initialize WebSocket collector.
+
+        Args:
+            db_manager: DatabaseManager instance (optional, for new PostgreSQL)
+            persistence_manager: DataPersistenceManager instance (optional)
+            data_hub: DataHub instance for real-time caching (optional)
+        """
         if not TRADING_IG_AVAILABLE:
             raise ImportError("trading_ig library required. Install with: pip install trading-ig")
 
         self.ig_service = None
-        self.db = ForexDatabase()
+        self.db = ForexDatabase()  # Keep old database for backward compatibility
         self.pairs = ForexConfig.FOREX_PAIRS  # Fixed: Use FOREX_PAIRS instead of PAIRS
         self.subscriptions = []
 
+        # New PostgreSQL persistence
+        self.db_manager = db_manager
+        self.persistence = persistence_manager
+        self.persist_enabled = persistence_manager is not None
+
+        # DataHub integration (try env if not provided)
+        self.data_hub = data_hub
+        if self.data_hub is None and DATA_HUB_AVAILABLE:
+            self.data_hub = get_data_hub_from_env()
+
+        # In-memory tick storage (for 1-minute candle aggregation)
+        self.latest_ticks: Dict[str, Dict] = {}  # symbol -> {bid, ask, timestamp}
+        self.forming_candles: Dict[str, Dict] = defaultdict(dict)  # symbol -> candle data
+
         # Statistics
         self.candles_received = 0
+        self.ticks_received = 0
         self.start_time = datetime.now()
 
         print("="*80)
@@ -57,6 +89,7 @@ class ForexWebSocketCollector:
         print(f"\nPairs to monitor: {len(self.pairs)}")
         print(f"Timeframes: 5m, 15m")
         print(f"Storage: Database at {self.db.db_path}")
+        print(f"DataHub: {'✅ Connected' if self.data_hub else '❌ Not available'}")
 
     def connect(self):
         """Connect to IG Lightstreamer WebSocket."""
@@ -212,8 +245,24 @@ class ForexWebSocketCollector:
                 'volume': 0.0  # IG doesn't provide volume for forex
             }
 
-            # Store in database
+            # Store in old database (for backward compatibility)
             self.db.store_candle(pair, timeframe, candle, source='websocket')
+
+            # Save tick to new PostgreSQL database (using close as representative tick)
+            if self.persist_enabled:
+                try:
+                    # Create tick from candle close
+                    bid = float(close_price) - 0.0001  # Approximate bid (spread ~1 pip)
+                    ask = float(close_price) + 0.0001  # Approximate ask
+
+                    asyncio.create_task(self.persistence.save_ig_tick(
+                        symbol=pair,
+                        timestamp=datetime.fromtimestamp(timestamp),
+                        bid=bid,
+                        ask=ask
+                    ))
+                except Exception as e:
+                    print(f"⚠️  Failed to save IG tick: {e}")
 
             # Update statistics
             self.candles_received += 1
@@ -256,6 +305,7 @@ class ForexWebSocketCollector:
         print("="*80)
         print(f"   Runtime: {runtime:.1f} minutes")
         print(f"   Candles received: {self.candles_received:,}")
+        print(f"   Ticks received: {self.ticks_received:,}")
         print(f"   Rate: {self.candles_received/runtime:.1f} candles/min" if runtime > 0 else "   Rate: N/A")
 
         # Database stats
@@ -271,6 +321,210 @@ class ForexWebSocketCollector:
                 print(f"      {source}: {count:,}")
 
         print("="*80)
+
+    # ========================================================================
+    # RETRIEVAL METHODS (for UnifiedDataFetcher compatibility)
+    # ========================================================================
+
+    def get_latest_tick(self, symbol: str) -> Optional[Dict]:
+        """
+        Get latest tick for a symbol.
+
+        Args:
+            symbol: Trading pair (EUR_USD, GBP_USD, etc.)
+
+        Returns:
+            Dict with 'bid', 'ask', 'mid', 'spread', 'timestamp'
+        """
+        return self.latest_ticks.get(symbol)
+
+    def get_latest_candles(self, symbol: str, timeframe: str = "1m", bars: int = 100) -> Optional[List]:
+        """
+        Get latest candles from DataHub (if available).
+
+        Args:
+            symbol: Trading pair
+            timeframe: Currently only supports "1m"
+            bars: Number of candles to return
+
+        Returns:
+            List of candle dicts or None
+        """
+        if not self.data_hub:
+            return None
+
+        try:
+            candles = self.data_hub.get_latest_candles(symbol, limit=bars)
+            # Convert Candle objects to dicts for compatibility
+            return [
+                {
+                    'timestamp': c.timestamp,
+                    'open': c.open,
+                    'high': c.high,
+                    'low': c.low,
+                    'close': c.close,
+                    'volume': c.volume
+                }
+                for c in candles
+            ]
+        except Exception as e:
+            print(f"⚠️  Failed to get candles from DataHub: {e}")
+            return None
+
+    # ========================================================================
+    # TICK PROCESSING (for DataHub updates)
+    # ========================================================================
+
+    def _process_tick_update(self, item_update):
+        """
+        Process tick update and push to DataHub.
+
+        This handles real-time bid/ask updates for spread monitoring
+        and 1-minute candle aggregation.
+        """
+        try:
+            # Extract item name
+            item_name = item_update.get('name', '')
+            parts = item_name.split(':')
+            if len(parts) < 2:
+                return
+
+            epic = parts[1]
+            pair = self._epic_to_pair(epic)
+            if not pair:
+                return
+
+            # Extract bid/ask
+            bid = item_update.get('BID')
+            ask = item_update.get('OFFER')  # IG uses OFFER for ask
+
+            if not bid or not ask:
+                return
+
+            bid = float(bid)
+            ask = float(ask)
+            mid = (bid + ask) / 2.0
+
+            # Calculate spread in pips
+            pip_value = 0.01 if 'JPY' in pair else 0.0001
+            spread = (ask - bid) / pip_value
+
+            timestamp = datetime.utcnow()
+
+            # Store in memory
+            self.latest_ticks[pair] = {
+                'bid': bid,
+                'ask': ask,
+                'mid': mid,
+                'spread': spread,
+                'timestamp': timestamp
+            }
+
+            self.ticks_received += 1
+
+            # Push to DataHub if available
+            if self.data_hub:
+                try:
+                    tick = Tick(
+                        symbol=pair,
+                        bid=bid,
+                        ask=ask,
+                        mid=mid,
+                        spread=spread,
+                        timestamp=timestamp
+                    )
+                    self.data_hub.update_tick(tick)
+                except Exception as e:
+                    if self.ticks_received % 100 == 0:  # Log occasionally
+                        print(f"⚠️  DataHub tick update failed: {e}")
+
+            # Aggregate into 1-minute candles
+            self._aggregate_tick_to_candle(pair, mid, timestamp)
+
+        except Exception as e:
+            print(f"⚠️  Error processing tick: {e}")
+
+    def _aggregate_tick_to_candle(self, symbol: str, price: float, timestamp: datetime):
+        """
+        Aggregate ticks into 1-minute candles.
+
+        Args:
+            symbol: Trading pair
+            price: Mid price
+            timestamp: Tick timestamp
+        """
+        # Get current minute boundary
+        minute_start = timestamp.replace(second=0, microsecond=0)
+
+        # Initialize or update forming candle
+        if symbol not in self.forming_candles or self.forming_candles[symbol].get('timestamp') != minute_start:
+            # New candle - finalize previous if exists
+            if symbol in self.forming_candles and self.forming_candles[symbol]:
+                self._finalize_candle(symbol)
+
+            # Start new candle
+            self.forming_candles[symbol] = {
+                'timestamp': minute_start,
+                'open': price,
+                'high': price,
+                'low': price,
+                'close': price,
+                'tick_count': 1
+            }
+        else:
+            # Update existing candle
+            candle = self.forming_candles[symbol]
+            candle['high'] = max(candle['high'], price)
+            candle['low'] = min(candle['low'], price)
+            candle['close'] = price
+            candle['tick_count'] += 1
+
+    def _finalize_candle(self, symbol: str):
+        """
+        Finalize a completed 1-minute candle and push to DataHub.
+
+        Args:
+            symbol: Trading pair
+        """
+        if symbol not in self.forming_candles:
+            return
+
+        candle_data = self.forming_candles[symbol]
+
+        # Create Candle object
+        candle = Candle(
+            symbol=symbol,
+            timestamp=candle_data['timestamp'],
+            open=candle_data['open'],
+            high=candle_data['high'],
+            low=candle_data['low'],
+            close=candle_data['close'],
+            volume=float(candle_data.get('tick_count', 0))  # Use tick count as proxy
+        )
+
+        # Push to DataHub
+        if self.data_hub:
+            try:
+                self.data_hub.update_candle_1m(candle)
+            except Exception as e:
+                print(f"⚠️  DataHub candle update failed for {symbol}: {e}")
+
+        # Also save to database (legacy)
+        try:
+            self.db.store_candle(
+                symbol, '1',
+                {
+                    'timestamp': candle_data['timestamp'].timestamp(),
+                    'open': candle_data['open'],
+                    'high': candle_data['high'],
+                    'low': candle_data['low'],
+                    'close': candle_data['close'],
+                    'volume': candle_data.get('tick_count', 0)
+                },
+                source='websocket_tick_aggregated'
+            )
+        except Exception as e:
+            print(f"⚠️  Database candle save failed: {e}")
 
     def run_forever(self):
         """Keep collector running indefinitely."""

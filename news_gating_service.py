@@ -21,6 +21,7 @@ from enum import Enum
 
 from insightsentry_client import InsightSentryClient
 from database_manager import DatabaseManager
+from data_persistence_manager import DataPersistenceManager
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,9 @@ class NewsGatingService:
         self.db = db_manager or DatabaseManager()
         self.is_client = insightsentry_client or InsightSentryClient()
 
+        # Data persistence manager
+        self.persistence = DataPersistenceManager(self.db)
+
         # In-memory cache of gated instruments
         self.gated_instruments: Set[int] = set()
 
@@ -147,6 +151,13 @@ class NewsGatingService:
 
             logger.info(f"Found {len(events)} high-impact events")
 
+            # Save events to database
+            try:
+                saved_count = await self.persistence.save_economic_events(events)
+                logger.debug(f"Saved {saved_count} events to database")
+            except Exception as e:
+                logger.warning(f"Failed to save events to database: {e}")
+
             # Process each event
             for event in events:
                 await self._process_event(event)
@@ -162,17 +173,17 @@ class NewsGatingService:
         Process a single economic event.
 
         Args:
-            event: Event data from InsightSentry
+            event: Event data from InsightSentry (v3 API format)
         """
-        # Extract event details
-        event_id = event.get("event_id")
-        scheduled_time_str = event.get("scheduled_time")
+        # Extract event details (v3 API format)
+        # v3 uses 'date' instead of 'scheduled_time', 'title' instead of 'event_name'
+        scheduled_time_str = event.get("date") or event.get("scheduled_time")
         country = event.get("country")
         currency = event.get("currency")
-        event_name = event.get("event_name")
+        event_name = event.get("title") or event.get("event_name")
         importance = event.get("importance")
 
-        if not all([event_id, scheduled_time_str, currency]):
+        if not all([scheduled_time_str, currency]):
             logger.warning(f"Incomplete event data: {event}")
             return
 
@@ -182,6 +193,9 @@ class NewsGatingService:
         except Exception as e:
             logger.error(f"Failed to parse scheduled_time: {scheduled_time_str} - {e}")
             return
+
+        # Generate event_id if not present
+        event_id = event.get("event_id") or f"{country}_{event_name}_{scheduled_time.strftime('%Y%m%d%H%M')}"
 
         # Calculate gate window
         gate_start = scheduled_time - timedelta(minutes=self.config.gate_window_minutes)

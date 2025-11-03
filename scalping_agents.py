@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from scalping_config import ScalpingConfig
 from scalping_indicators import ScalpingIndicators
+from dynamic_sltp import DynamicSLTPCalculator
 
 
 @dataclass
@@ -366,6 +367,19 @@ class ScalpValidator:
         self.llm = llm
         self.name = "Scalp Validator (Judge)"
 
+        # Initialize dynamic SL/TP calculator (research-backed)
+        self.sltp_calculator = DynamicSLTPCalculator(
+            atr_period=ScalpingConfig.ATR_PERIOD,
+            atr_mult_sl=ScalpingConfig.ATR_MULTIPLIER_SL,
+            atr_mult_tp=ScalpingConfig.ATR_MULTIPLIER_TP,
+            atr_mult_trail=ScalpingConfig.ATR_MULTIPLIER_TRAIL,
+            buffer_spread_mult=ScalpingConfig.BUFFER_SPREAD_MULT,
+            buffer_atr_mult=ScalpingConfig.BUFFER_ATR_MULT,
+            timeout_minutes=ScalpingConfig.TIMEOUT_MINUTES,
+            time_decay_lambda=ScalpingConfig.TIME_DECAY_LAMBDA,
+            breakeven_trigger=ScalpingConfig.BREAKEVEN_TRIGGER
+        )
+
     def validate(self, momentum_analysis: Dict, technical_analysis: Dict, market_data: Dict) -> ScalpSetup:
         """
         Final validation: Should we take this scalp?
@@ -381,6 +395,10 @@ class ScalpValidator:
         pair = market_data['pair']
         current_price = market_data['current_price']
         spread = market_data.get('spread', 1.0)
+
+        # Handle None spread (data not available yet)
+        if spread is None:
+            spread = 1.0  # Use safe default
 
         # Check spread first (critical for scalping)
         if spread > ScalpingConfig.MAX_SPREAD_PIPS:
@@ -490,12 +508,70 @@ Respond in JSON format:
 
         # Calculate TP/SL based on direction
         pip_value = 0.0001 if 'JPY' not in pair else 0.01
-        if direction == 'BUY':
-            take_profit = current_price + (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
-            stop_loss = current_price - (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
-        else:  # SELL
-            take_profit = current_price - (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
-            stop_loss = current_price + (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
+
+        # Use dynamic SL/TP if enabled
+        if ScalpingConfig.DYNAMIC_SLTP_ENABLED:
+            try:
+                # Get recent candles for ATR calculation
+                candles = market_data.get('candles', [])
+
+                if len(candles) >= ScalpingConfig.ATR_PERIOD:
+                    # Calculate dynamic levels using research-backed method
+                    levels = self.sltp_calculator.calculate_sltp(
+                        entry_price=current_price,
+                        direction='long' if direction == 'BUY' else 'short',
+                        pair=pair,
+                        candles=candles,
+                        spread=spread,
+                        use_structure=ScalpingConfig.USE_MARKET_STRUCTURE
+                    )
+
+                    # Apply safety constraints
+                    tp_pips = max(ScalpingConfig.MIN_TP_PIPS, min(levels.tp_pips, ScalpingConfig.MAX_TP_PIPS))
+                    sl_pips = max(ScalpingConfig.MIN_SL_PIPS, min(levels.sl_pips, ScalpingConfig.MAX_SL_PIPS))
+
+                    # Calculate prices
+                    if direction == 'BUY':
+                        take_profit = current_price + (tp_pips * pip_value)
+                        stop_loss = current_price - (sl_pips * pip_value)
+                    else:  # SELL
+                        take_profit = current_price - (tp_pips * pip_value)
+                        stop_loss = current_price + (sl_pips * pip_value)
+
+                    # Log comparison (for analysis)
+                    print(f"📊 Dynamic SL/TP for {pair} {direction}:")
+                    print(f"   Hardcoded: TP={ScalpingConfig.TAKE_PROFIT_PIPS} / SL={ScalpingConfig.STOP_LOSS_PIPS} pips (R:R={ScalpingConfig.TAKE_PROFIT_PIPS/ScalpingConfig.STOP_LOSS_PIPS:.2f})")
+                    print(f"   Dynamic:   TP={tp_pips:.1f} / SL={sl_pips:.1f} pips (R:R={tp_pips/sl_pips:.2f})")
+                    print(f"   Method: {levels.method}, Confidence: {levels.confidence:.0%}, ATR: {levels.metadata.get('atr_pips', 0):.1f} pips")
+
+                else:
+                    # Not enough candles, fall back to hardcoded
+                    print(f"⚠️  Not enough candles for dynamic SL/TP ({len(candles)}/{ScalpingConfig.ATR_PERIOD}), using hardcoded values")
+                    if direction == 'BUY':
+                        take_profit = current_price + (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
+                        stop_loss = current_price - (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
+                    else:  # SELL
+                        take_profit = current_price - (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
+                        stop_loss = current_price + (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
+
+            except Exception as e:
+                # Error calculating dynamic levels, fall back to hardcoded
+                print(f"⚠️  Error calculating dynamic SL/TP: {e}, using hardcoded values")
+                if direction == 'BUY':
+                    take_profit = current_price + (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
+                    stop_loss = current_price - (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
+                else:  # SELL
+                    take_profit = current_price - (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
+                    stop_loss = current_price + (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
+
+        else:
+            # Use hardcoded values (original behavior)
+            if direction == 'BUY':
+                take_profit = current_price + (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
+                stop_loss = current_price - (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
+            else:  # SELL
+                take_profit = current_price - (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
+                stop_loss = current_price + (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
 
         return ScalpSetup(
             pair=pair,
@@ -724,8 +800,10 @@ Respond in JSON:
         else:
             base_size = ScalpingConfig.TIER3_SIZE
 
-        # Adjust for spread if enabled
-        if ScalpingConfig.REDUCE_SIZE_HIGH_SPREAD and scalp_setup.spread > ScalpingConfig.SPREAD_PENALTY_THRESHOLD:
+        # Adjust for spread if enabled (handle None spread)
+        if (ScalpingConfig.REDUCE_SIZE_HIGH_SPREAD and
+            scalp_setup.spread is not None and
+            scalp_setup.spread > ScalpingConfig.SPREAD_PENALTY_THRESHOLD):
             base_size *= 0.75
 
         final_size = min(position_size, base_size)
@@ -748,12 +826,14 @@ def create_scalping_agents(config: ScalpingConfig) -> Dict:
     Returns:
         Dict with all agent instances
     """
-    # Initialize LLM
+    # Initialize LLM with timeout and token limits
     llm = ChatOpenAI(
-        model="gpt-4",  # Using GPT-4 for better decision-making
+        model="gpt-4o-mini",  # Fast model for low latency
         temperature=0.1,
-        api_key=config.OPENAI_API_KEY,
-        timeout=config.CLAUDE_TIMEOUT_SECONDS
+        max_tokens=400,  # Cap output to prevent long generation
+        timeout=60,  # 60 second timeout (increased from default)
+        max_retries=2,  # Limit retries
+        api_key=config.OPENAI_API_KEY
     )
 
     return {

@@ -4,16 +4,18 @@ Enhanced Scalping Dashboard - Full System Integration
 Auto-starting dashboard with:
 - PostgreSQL + TimescaleDB database (remote)
 - InsightSentry MEGA (news/calendar/sentiment)
-- DataBento (CME futures order flow)
+- DataBento (CME futures with REAL VOLUME - auto-starts streaming)
+- Multi-source data (IG WebSocket + DataBento candles)
 - News gating service (auto-close before events)
 - Real-time WebSocket data for EUR/USD, GBP/USD, USD/JPY
-- Live indicator calculations (EMA ribbon, VWAP, Donchian, RSI(7), ADX(7))
+- Live indicator calculations (EMA ribbon, True VWAP, Donchian, RSI(7), ADX(7))
 - Agent debates and trade signals
 - 20-minute trade timer monitoring
 - Spread monitoring
 - Performance metrics
 
 Starts automatically on launch - no user action required!
+All data sources start in background automatically.
 """
 
 import streamlit as st
@@ -48,7 +50,7 @@ from databento_client import DataBentoClient
 from unified_data_fetcher import UnifiedDataFetcher, get_unified_data_fetcher
 
 # DataHub (shared memory cache)
-from data_hub import start_data_hub_manager, DataHub, DataHubManager
+from data_hub import start_data_hub_manager, connect_to_data_hub, DataHub, DataHubManager
 import os
 
 # Configure logging
@@ -219,6 +221,12 @@ if 'enable_websocket' not in st.session_state:
 if 'auto_start_done' not in st.session_state:
     st.session_state.auto_start_done = False
 
+if 'databento_streaming' not in st.session_state:
+    st.session_state.databento_streaming = False
+
+if 'databento_thread' not in st.session_state:
+    st.session_state.databento_thread = None
+
 if 'live_data' not in st.session_state:
     st.session_state.live_data = {pair: None for pair in ScalpingConfig.SCALPING_PAIRS}
 
@@ -240,18 +248,18 @@ market_hours = get_market_hours()
 async def initialize_enhanced_services():
     """Initialize all enhanced services (DataHub, database, InsightSentry, news gating, DataBento)."""
     try:
-        # 0. Initialize DataHub (FIRST - before all other services)
-        st.session_state.service_status['datahub'] = 'Starting...'
+        # 0. Connect to DataHub (FIRST - before all other services)
+        st.session_state.service_status['datahub'] = 'Connecting...'
         try:
-            logger.info("🚀 Starting DataHub manager...")
+            logger.info("🔌 Connecting to DataHub server...")
 
-            # Start DataHub manager
-            manager = start_data_hub_manager(
+            # Connect to existing DataHub server (don't start a new one)
+            datahub = connect_to_data_hub(
                 address=('127.0.0.1', 50000),
                 authkey=b'forex_scalper_2025'
             )
-            st.session_state.datahub_manager = manager
-            st.session_state.datahub = manager.DataHub()
+            st.session_state.datahub = datahub
+            st.session_state.datahub_manager = None  # No manager in client mode
 
             # Set environment variables for subprocesses
             os.environ['DATA_HUB_HOST'] = '127.0.0.1'
@@ -259,8 +267,8 @@ async def initialize_enhanced_services():
             os.environ['DATA_HUB_AUTHKEY'] = 'forex_scalper_2025'
 
             st.session_state.datahub_initialized = True
-            st.session_state.service_status['datahub'] = '✅ Running'
-            logger.info("✅ DataHub manager started at 127.0.0.1:50000")
+            st.session_state.service_status['datahub'] = '✅ Connected'
+            logger.info("✅ Connected to DataHub at 127.0.0.1:50000")
 
         except Exception as e:
             st.session_state.service_status['datahub'] = f'❌ {str(e)[:30]}'
@@ -434,6 +442,56 @@ def initialize_services_sync():
     return loop.run_until_complete(initialize_enhanced_services())
 
 
+def start_databento_streaming():
+    """Start DataBento streaming in a background thread."""
+    # Check if already streaming
+    if st.session_state.databento_streaming:
+        logger.info("DataBento already streaming")
+        return True
+
+    # Check if client is available
+    if not hasattr(st.session_state, 'databento_client') or st.session_state.databento_client is None:
+        logger.warning("DataBento client not initialized")
+        return False
+
+    # Get client reference BEFORE starting thread
+    client = st.session_state.databento_client
+
+    def run_databento_async(databento_client):
+        """Run DataBento client in async loop. Receives client as parameter to avoid session_state access."""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            logger.info("🚀 Starting DataBento streaming (CME futures: 6E, 6B, 6J)...")
+            logger.info("   Generating 1-minute OHLCV candles with REAL volume")
+            logger.info("   Pushing to DataHub on port 50000")
+
+            # Start streaming (blocking call)
+            loop.run_until_complete(databento_client.start())
+
+        except Exception as e:
+            logger.error(f"❌ DataBento streaming error: {e}")
+            # Can't update session_state from thread, just log
+
+    try:
+        # Start in background thread, passing client directly
+        databento_thread = threading.Thread(target=run_databento_async, args=(client,), daemon=True)
+        databento_thread.start()
+
+        st.session_state.databento_thread = databento_thread
+        st.session_state.databento_streaming = True
+        st.session_state.service_status['databento'] = '✅ Streaming (real volume)'
+
+        logger.info("✅ DataBento streaming started in background")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to start DataBento streaming: {e}")
+        st.session_state.service_status['databento'] = f'❌ Failed: {str(e)[:30]}'
+        return False
+
+
 # AUTO-START: Launch everything on first load
 if not st.session_state.auto_start_done:
     try:
@@ -448,6 +506,12 @@ if not st.session_state.auto_start_done:
         if st.session_state.enable_websocket:
             st.session_state.service_manager.start_all(enable_websocket=True)
             logger.info("✅ WebSocket collector started (connected to DataHub)")
+
+        # Start DataBento streaming (real volume candles)
+        # This will generate 1-minute OHLCV candles with real volume from CME futures
+        if st.session_state.databento_client:
+            start_databento_streaming()
+            logger.info("✅ DataBento streaming started (real volume candles)")
 
         st.session_state.auto_start_done = True
     except Exception as e:
@@ -670,11 +734,31 @@ with st.sidebar:
         st.success("✅ WebSocket: ACTIVE")
         pairs_connected = ws_status.get('pairs_subscribed', 0)
         st.write(f"**Pairs:** {pairs_connected}")
+        st.write("**Volume:** Tick count (IG)")
     else:
         st.warning("⚠️ WebSocket: DISCONNECTED")
         if st.button("Reconnect WebSocket"):
             st.session_state.service_manager.start_all(enable_websocket=True)
             st.rerun()
+
+    st.markdown("---")
+
+    # DataBento status
+    if st.session_state.databento_streaming:
+        st.success("✅ DataBento: STREAMING")
+        st.write("**Symbols:** 6E, 6B, 6J")
+        st.write("**Volume:** REAL (CME)")
+        st.write("**Candles:** 1-minute OHLCV")
+        if hasattr(st.session_state, 'databento_client') and st.session_state.databento_client:
+            candles_gen = getattr(st.session_state.databento_client, 'candles_generated', 0)
+            st.write(f"**Generated:** {candles_gen} candles")
+    elif hasattr(st.session_state, 'databento_client') and st.session_state.databento_client:
+        st.info("⏸️ DataBento: READY (not streaming)")
+        if st.button("Start DataBento Streaming"):
+            start_databento_streaming()
+            st.rerun()
+    else:
+        st.warning("⚠️ DataBento: NOT AVAILABLE")
 
     st.markdown("---")
 
@@ -694,8 +778,10 @@ with tab1:
         - ✅ **PostgreSQL + TimescaleDB** - High-performance time-series storage
         - ✅ **InsightSentry MEGA** - Economic calendar & news monitoring
         - ✅ **News Gating** - Auto-close positions before high-impact events
-        - ✅ **DataBento** - CME futures order flow (L2 depth)
-        - ✅ **Live 1-minute market data** via WebSocket
+        - ✅ **DataBento** - CME futures with **REAL VOLUME** (6E, 6B, 6J)
+        - ✅ **Multi-source data** - IG WebSocket (fast) + DataBento (accurate)
+        - ✅ **Live 1-minute market data** with automatic source prioritization
+        - ✅ **True VWAP** when real volume available, TWAP fallback
         - ✅ **Optimized scalping indicators** (EMA 3/6/12, VWAP, Donchian, RSI(7), ADX(7))
         - ✅ **AI agent debates** and trading signals
         - ✅ **Active trade monitoring** with 20-minute countdown

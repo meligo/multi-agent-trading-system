@@ -7,6 +7,7 @@ Finnhub free tier: 60 calls/minute
 
 import finnhub
 import pandas as pd
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional
 from forex_config import ForexConfig
@@ -15,12 +16,14 @@ from forex_config import ForexConfig
 class FinnhubDataFetcher:
     """Fetch forex candles from Finnhub API."""
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, db_manager=None, persistence_manager=None):
         """
         Initialize Finnhub client.
 
         Args:
             api_key: Finnhub API key (defaults to config)
+            db_manager: DatabaseManager instance (optional)
+            persistence_manager: DataPersistenceManager instance (optional)
         """
         self.api_key = api_key or ForexConfig.FINNHUB_API_KEY
 
@@ -28,6 +31,11 @@ class FinnhubDataFetcher:
             raise ValueError("Finnhub API key not found")
 
         self.client = finnhub.Client(api_key=self.api_key)
+
+        # Database persistence
+        self.db_manager = db_manager
+        self.persistence = persistence_manager
+        self.persist_enabled = persistence_manager is not None
 
     def _ig_pair_to_finnhub(self, ig_pair: str) -> str:
         """
@@ -151,7 +159,21 @@ class FinnhubDataFetcher:
             df = df.sort_values('time').reset_index(drop=True)
 
             # Return last 'count' candles
-            return df.tail(count).reset_index(drop=True)
+            result_df = df.tail(count).reset_index(drop=True)
+
+            # Save to database if persistence enabled
+            if self.persist_enabled:
+                try:
+                    candles = result_df.to_dict('records')
+                    asyncio.create_task(self.persistence.save_finnhub_candles(
+                        symbol=pair,
+                        timeframe=timeframe,
+                        candles=candles
+                    ))
+                except Exception as e:
+                    print(f"⚠️  Failed to save Finnhub candles: {e}")
+
+            return result_df
 
         except Exception as e:
             raise ValueError(f"Failed to fetch {pair} from Finnhub: {str(e)}")

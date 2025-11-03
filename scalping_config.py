@@ -36,6 +36,41 @@ class ScalpingConfig:
     AGGRESSIVE_TP_PIPS: float = 8.0
     AGGRESSIVE_SL_PIPS: float = 5.0
 
+    # ============================================================================
+    # DYNAMIC SL/TP CONFIGURATION (Research-Backed)
+    # ============================================================================
+
+    # Toggle dynamic SL/TP (set to True to use ATR-based dynamic levels)
+    DYNAMIC_SLTP_ENABLED: bool = True
+
+    # ATR-Based Volatility Scaling Parameters
+    # Based on academic research: Kaminski & Lo (2014), Moreira & Muir (2017)
+    ATR_PERIOD: int = 14                    # Bars to calculate ATR
+    ATR_MULTIPLIER_SL: float = 0.8          # SL = 0.8 × ATR (conservative)
+    ATR_MULTIPLIER_TP: float = 1.2          # TP = 1.2 × ATR (1.5:1 R:R)
+    ATR_MULTIPLIER_TRAIL: float = 1.0       # Trailing = 1.0 × ATR
+
+    # Buffer Parameters (avoid stop-hunting)
+    BUFFER_SPREAD_MULT: float = 1.5         # Buffer = 1.5 × spread
+    BUFFER_ATR_MULT: float = 0.1            # Buffer += 0.1 × ATR
+
+    # Time-Based Governance (alpha decay exits)
+    TIMEOUT_MINUTES: int = 12               # Hard timeout for scalps
+    TIME_DECAY_LAMBDA: float = 1.2          # Stop-tightening rate
+
+    # Break-Even Trigger
+    BREAKEVEN_TRIGGER: float = 0.6          # Move to BE after 0.6 × ATR profit
+
+    # Market Structure Analysis
+    USE_MARKET_STRUCTURE: bool = True       # Consider swings/pivots
+    SWING_LOOKBACK_BARS: int = 20           # Bars to find swing levels
+
+    # Dynamic SL/TP Range Constraints (safety limits)
+    MIN_SL_PIPS: float = 4.0                # Minimum stop loss
+    MAX_SL_PIPS: float = 12.0               # Maximum stop loss
+    MIN_TP_PIPS: float = 6.0                # Minimum take profit
+    MAX_TP_PIPS: float = 20.0               # Maximum take profit
+
     # Spread Limits (CRITICAL for scalping profitability)
     MAX_SPREAD_PIPS: float = 1.2    # Reject trades if spread > 1.2 pips
     IDEAL_SPREAD_PIPS: float = 0.8  # Ideal spread for full position size

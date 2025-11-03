@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import pandas as pd
 
 from scalping_config import ScalpingConfig
 from scalping_indicators import ScalpingIndicators
@@ -86,6 +87,7 @@ class ScalpingEngine:
 
         # Trading state
         self.active_trades: Dict[str, ActiveTrade] = {}
+        self.trade_history: List[Dict] = []  # Historical trades for performance stats
         self.daily_stats: DailyStats = DailyStats(date=datetime.now().strftime("%Y-%m-%d"))
         self.running: bool = False
         self.paused: bool = False
@@ -102,6 +104,11 @@ class ScalpingEngine:
     def set_data_fetcher(self, fetcher):
         """Inject data fetcher (forex_data or similar)."""
         self.data_fetcher = fetcher
+
+    @property
+    def open_trades(self) -> Dict[str, ActiveTrade]:
+        """Alias for active_trades (for dashboard compatibility)."""
+        return self.active_trades
 
     # ========================================================================
     # TRADING HOURS CHECK
@@ -138,7 +145,12 @@ class ScalpingEngine:
             return 1.0
 
         try:
-            spread = self.data_fetcher.get_current_spread(pair)
+            spread = self.data_fetcher.get_spread(pair)
+
+            # Handle None spread (data not available yet)
+            if spread is None:
+                print(f"⚠️  Spread not available for {pair}, skipping...")
+                return None
 
             if spread > self.config.MAX_SPREAD_PIPS:
                 print(f"❌ Spread too wide for {pair}: {spread:.1f} pips > {self.config.MAX_SPREAD_PIPS} max")
@@ -221,19 +233,37 @@ class ScalpingEngine:
             return None
 
         try:
-            # Fetch 1-minute data
-            data = self.data_fetcher.fetch_data(pair, timeframe="1m", bars=50)
+            # Use UnifiedDataFetcher (aggregates all sources)
+            if hasattr(self.data_fetcher, 'fetch_market_data'):
+                # New unified fetcher
+                market_data = self.data_fetcher.fetch_market_data(pair, timeframe="1m", bars=50)
 
-            if not data or len(data) < 20:
-                print(f"⚠️  Insufficient data for {pair}")
-                return None
+                if not market_data or market_data.get('candles') is None:
+                    print(f"⚠️  No candle data for {pair}")
+                    return None
+
+                data = market_data['candles']
+
+                if len(data) < 20:
+                    print(f"⚠️  Insufficient data for {pair}")
+                    return None
+
+                # Store additional market data
+                self._current_spread = market_data.get('spread')
+                self._current_ta = market_data.get('ta_consensus')
+                self._current_patterns = market_data.get('patterns')
+
+            else:
+                # Legacy fetcher (old format)
+                data = self.data_fetcher.fetch_data(pair, timeframe="1m", bars=50)
+
+                if not data or len(data) < 20:
+                    print(f"⚠️  Insufficient data for {pair}")
+                    return None
 
             current_price = data['close'].iloc[-1]
 
             # Calculate ALL indicators using ScalpingIndicators class
-            # Add necessary columns for calculations
-            data = ScalpingIndicators.add_candle_metrics(data)
-
             # OPTIMIZED INDICATORS (from indicator research)
             # EMA Ribbon (3, 6, 12) NOT (5, 10, 20)
             data = ScalpingIndicators.calculate_ema_ribbon(
@@ -242,16 +272,22 @@ class ScalpingEngine:
             )
 
             # VWAP with bands (institutional anchor)
-            data = ScalpingIndicators.calculate_vwap(
-                data,
-                anchor_time=datetime.now().replace(
-                    hour=ScalpingConfig.INDICATOR_PARAMS['vwap']['anchor_hour'],
-                    minute=0, second=0, microsecond=0
+            # NOTE: Using tick volume (not real volume) - this is TWAP, not true VWAP
+            # Real volume available from DataBento futures (6E, 6B, 6J) - TODO: integrate
+            try:
+                data = ScalpingIndicators.calculate_vwap(
+                    data,
+                    session_start_hour=ScalpingConfig.INDICATOR_PARAMS['vwap']['session_start_hour']
                 )
-            )
+            except Exception as e:
+                logger.warning(f"VWAP calculation failed (no volume?): {e}")
+                # Add dummy VWAP columns if missing
+                data['vwap'] = data['close']
+                data['above_vwap'] = True
+                data['below_vwap'] = False
 
             # Donchian Channel (15-period breakout)
-            data = ScalpingIndicators.calculate_donchian(
+            data = ScalpingIndicators.calculate_donchian_channel(
                 data,
                 period=ScalpingConfig.INDICATOR_PARAMS['donchian']['period']
             )
@@ -276,10 +312,10 @@ class ScalpingEngine:
             )
 
             # Bollinger Band Squeeze
-            data = ScalpingIndicators.calculate_bb_squeeze(data)
+            data = ScalpingIndicators.calculate_bollinger_squeeze(data)
 
-            # Volume analysis
-            data = ScalpingIndicators.calculate_volume_indicators(data)
+            # Volume analysis (TODO: implement if needed)
+            # data = ScalpingIndicators.calculate_volume_indicators(data)
 
             # PROFESSIONAL SCALPING TECHNIQUES
             # 1. Opening Range Breakout (ORB)
@@ -313,8 +349,8 @@ class ScalpingEngine:
                 atr_multiplier=ScalpingConfig.INDICATOR_PARAMS['impulse']['atr_multiplier']
             )
 
-            # 5. First Pullback After Impulse
-            data = ScalpingIndicators.detect_first_pullback_after_impulse(data)
+            # 5. First Pullback After Impulse (TODO: implement if needed)
+            # data = ScalpingIndicators.detect_first_pullback_after_impulse(data)
 
             # 6. Floor Pivot Points (from previous day)
             if len(data) >= 1440:  # Need at least 1 day of 1m data
@@ -349,14 +385,34 @@ class ScalpingEngine:
             fix_window_status = ScalpingIndicators.is_fix_window(datetime.now())
 
             # 10. VWAP Mean Reversion (for choppy markets)
-            vwap_z_score = (current_price - data['vwap'].iloc[-1]) / data['vwap_std'].iloc[-1] if 'vwap_std' in data else 0
+            # Calculate z-score safely (handle None/NaN)
+            vwap_std = data['vwap_std'].iloc[-1] if 'vwap_std' in data else None
+            if vwap_std and vwap_std > 0 and not pd.isna(vwap_std):
+                vwap_z_score = (current_price - data['vwap'].iloc[-1]) / vwap_std
+            else:
+                vwap_z_score = 0
+
+            # Get thresholds safely
+            z_threshold = ScalpingConfig.INDICATOR_PARAMS['vwap_reversion'].get('z_score_threshold', 2.0)
+            adx_max = ScalpingConfig.INDICATOR_PARAMS['vwap_reversion'].get('adx_max', 18)
+            current_adx = data['adx'].iloc[-1]
+
+            # Check reversion signals with None guards
             vwap_reversion_long = (
-                vwap_z_score < -ScalpingConfig.INDICATOR_PARAMS['vwap_reversion']['z_score_threshold'] and
-                data['adx'].iloc[-1] < ScalpingConfig.INDICATOR_PARAMS['vwap_reversion']['adx_max']
+                z_threshold is not None and
+                adx_max is not None and
+                current_adx is not None and
+                not pd.isna(current_adx) and
+                vwap_z_score < -z_threshold and
+                current_adx < adx_max
             )
             vwap_reversion_short = (
-                vwap_z_score > ScalpingConfig.INDICATOR_PARAMS['vwap_reversion']['z_score_threshold'] and
-                data['adx'].iloc[-1] < ScalpingConfig.INDICATOR_PARAMS['vwap_reversion']['adx_max']
+                z_threshold is not None and
+                adx_max is not None and
+                current_adx is not None and
+                not pd.isna(current_adx) and
+                vwap_z_score > z_threshold and
+                current_adx < adx_max
             )
 
             # Build comprehensive indicators dict
@@ -381,17 +437,18 @@ class ScalpingEngine:
                 "adx_trending": data['adx_trending'].iloc[-1],
                 "di_bullish": data['di_bullish'].iloc[-1],
                 "di_bearish": data['di_bearish'].iloc[-1],
-                "volume_spike": data['volume_spike'].iloc[-1],
+                "volume_spike": data['volume_spike'].iloc[-1] if 'volume_spike' in data.columns else False,
                 "squeeze_on": data['squeeze_on'].iloc[-1] if 'squeeze_on' in data else False,
                 "squeeze_off": data['squeeze_off'].iloc[-1] if 'squeeze_off' in data else False,
                 "supertrend_direction": data['supertrend_direction'].iloc[-1],
 
                 # Professional Scalping Techniques
-                "orb_breakout_long": current_price > london_orb.get('OR_high', current_price) or current_price > ny_orb.get('OR_high', current_price),
-                "orb_breakout_short": current_price < london_orb.get('OR_low', current_price) or current_price < ny_orb.get('OR_low', current_price),
+                # Handle None values from OR calculations (use 'or' to fallback to current_price)
+                "orb_breakout_long": current_price > (london_orb.get('OR_high') or current_price) or current_price > (ny_orb.get('OR_high') or current_price),
+                "orb_breakout_short": current_price < (london_orb.get('OR_low') or current_price) or current_price < (ny_orb.get('OR_low') or current_price),
                 "in_orb_window": datetime.now().hour in [8, 9, 13, 14],  # London/NY open hours
-                "OR_high": max(london_orb.get('OR_high', current_price), ny_orb.get('OR_high', current_price)),
-                "OR_low": min(london_orb.get('OR_low', current_price), ny_orb.get('OR_low', current_price)),
+                "OR_high": max(london_orb.get('OR_high') or current_price, ny_orb.get('OR_high') or current_price),
+                "OR_low": min(london_orb.get('OR_low') or current_price, ny_orb.get('OR_low') or current_price),
                 "long_sweep_detected": data['long_sweep_detected'].iloc[-1] if 'long_sweep_detected' in data else False,
                 "short_sweep_detected": data['short_sweep_detected'].iloc[-1] if 'short_sweep_detected' in data else False,
                 "inside_bar_compression": data['inside_bar_compression'].iloc[-1] if 'inside_bar_compression' in data else False,
@@ -432,7 +489,10 @@ class ScalpingEngine:
             }
 
         except Exception as e:
+            import traceback
             print(f"❌ Error fetching data for {pair}: {e}")
+            print(f"📍 Full traceback:")
+            traceback.print_exc()
             return None
 
     def _calculate_rsi(self, prices, period=14):
@@ -470,17 +530,53 @@ class ScalpingEngine:
         if not market_data:
             return None
 
-        # Run agents
+        # Run agents with timeout handling
         print(f"\n🚀 Fast Momentum Agent analyzing...")
-        momentum_analysis = self.agents["momentum"].analyze(market_data)
-        print(f"   Result: {momentum_analysis.get('setup_type', 'NONE')} - {momentum_analysis.get('direction', 'NONE')}")
+        try:
+            momentum_analysis = self.agents["momentum"].analyze(market_data)
+            print(f"   Result: {momentum_analysis.get('setup_type', 'NONE')} - {momentum_analysis.get('direction', 'NONE')}")
+        except Exception as e:
+            print(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
+            # Fallback: neutral momentum analysis
+            momentum_analysis = {
+                "setup_type": "NONE",
+                "direction": "NONE",
+                "strength": 0.0,
+                "reasoning": f"Agent timeout: {str(e)[:50]}"
+            }
 
         print(f"\n🔧 Technical Agent analyzing...")
-        technical_analysis = self.agents["technical"].analyze(market_data)
-        print(f"   Result: {'Supports' if technical_analysis.get('supports_trade') else 'Rejects'} trade")
+        try:
+            technical_analysis = self.agents["technical"].analyze(market_data)
+            print(f"   Result: {'Supports' if technical_analysis.get('supports_trade') else 'Rejects'} trade")
+        except Exception as e:
+            print(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
+            # Fallback: reject trade
+            technical_analysis = {
+                "supports_trade": False,
+                "reasoning": f"Agent timeout: {str(e)[:50]}"
+            }
 
         print(f"\n⚖️  Scalp Validator (Judge) deciding...")
-        scalp_setup = self.agents["validator"].validate(momentum_analysis, technical_analysis, market_data)
+        try:
+            scalp_setup = self.agents["validator"].validate(momentum_analysis, technical_analysis, market_data)
+        except Exception as e:
+            print(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
+            # Fallback: create rejected setup
+            from scalping_agents import ScalpSetup
+            scalp_setup = ScalpSetup(
+                pair=pair,
+                direction="NONE",
+                entry_price=market_data.get('current_price', 0),
+                take_profit=0,
+                stop_loss=0,
+                confidence=0.0,
+                reasoning=[f"Validator timeout: {str(e)[:50]}"],
+                indicators={},
+                spread=market_data.get('spread', 1.0),
+                risk_tier=3,
+                approved=False
+            )
 
         if scalp_setup.approved:
             print(f"   ✅ APPROVED: {scalp_setup.direction} {scalp_setup.pair}")
@@ -671,7 +767,22 @@ class ScalpingEngine:
         print(f"   Duration: {duration_minutes:.1f} minutes")
         print(f"   Daily Stats: {self.daily_stats.trades_won}W / {self.daily_stats.trades_lost}L")
 
-        # Remove from active trades
+        # Add to trade history for performance stats
+        self.trade_history.append({
+            'trade_id': trade_id,
+            'pair': trade.pair,
+            'direction': trade.direction,
+            'entry_price': trade.entry_price,
+            'exit_price': exit_price,
+            'entry_time': trade.entry_time,
+            'exit_time': trade.exit_time,
+            'pnl': pnl_dollars,
+            'pnl_pips': pnl_pips,
+            'reason': reason,
+            'duration_minutes': duration_minutes
+        })
+
+        # Remove from active trades (open_trades is a property alias, no need to delete separately)
         del self.active_trades[trade_id]
 
     def _get_current_price(self, pair: str) -> Optional[float]:
