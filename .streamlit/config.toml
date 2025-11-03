@@ -1,0 +1,29 @@
+# Streamlit Configuration
+# To change port, edit the server.port value below
+
+[server]
+# Port number to run on (default: 8501)
+port = 8501
+
+# Enable CORS for external access
+enableCORS = false
+
+# Disable file watcher for better performance in production
+runOnSave = false
+
+# Address to bind to (0.0.0.0 = all interfaces)
+address = "0.0.0.0"
+
+[browser]
+# Automatically open browser on start
+gatherUsageStats = false
+serverAddress = "localhost"
+serverPort = 8501
+
+[theme]
+# Custom theme (optional)
+primaryColor = "#00C853"  # Green for profits
+backgroundColor = "#0E1117"  # Dark background
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+font = "sans serif"
