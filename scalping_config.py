@@ -122,7 +122,7 @@ class ScalpingConfig:
     # ============================================================================
 
     MAX_TRADES_PER_DAY: int = 40        # Maximum scalps per day
-    MAX_OPEN_POSITIONS: int = 2         # Maximum simultaneous positions
+    MAX_OPEN_POSITIONS: int = 20        # Maximum simultaneous positions
     MAX_DAILY_LOSS_PERCENT: float = 1.5 # Stop trading at -1.5% daily loss
     MAX_CONSECUTIVE_LOSSES: int = 5     # Pause 30 min after 5 losses
     PAUSE_AFTER_LOSSES_MINUTES: int = 30
