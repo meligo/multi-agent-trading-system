@@ -690,14 +690,25 @@ class ScalpingEngine:
                 print(f"   Direction: {scalp_setup.direction}")
                 print(f"   Size: {position_size} lots")
 
+                # Calculate pip distances correctly
+                # JPY pairs: 2 decimals (0.01 = 1 pip), Others: 4 decimals (0.0001 = 1 pip)
+                pip_multiplier = 100 if 'JPY' in scalp_setup.pair else 10000
+
+                limit_pips = abs(scalp_setup.take_profit - scalp_setup.entry_price) * pip_multiplier
+                stop_pips = abs(scalp_setup.entry_price - scalp_setup.stop_loss) * pip_multiplier
+
+                print(f"   TP Distance: {limit_pips:.1f} pips")
+                print(f"   SL Distance: {stop_pips:.1f} pips")
+
                 # Create position on IG
                 response = self.ig_client.create_position(
                     epic=epic,
                     direction=scalp_setup.direction,
                     size=position_size,
                     order_type="MARKET",
-                    limit_distance=abs(scalp_setup.take_profit - scalp_setup.entry_price) * 10000,  # Convert to pips
-                    stop_distance=abs(scalp_setup.entry_price - scalp_setup.stop_loss) * 10000,  # Convert to pips
+                    limit_distance=limit_pips,
+                    stop_distance=stop_pips,
+                    guaranteed_stop=False,  # Must be explicitly False (not None)
                     force_open=True,
                     deal_reference=trade_id
                 )
