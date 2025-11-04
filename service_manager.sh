@@ -30,7 +30,7 @@ mkdir -p "${PID_DIR}"
 mkdir -p "${LOG_DIR}"
 
 # Service definitions (bash 3.2 compatible)
-SERVICES="datahub websocket databento dashboard"
+SERVICES="datahub websocket databento scalper dashboard"
 
 get_service_command() {
     case "$1" in
@@ -42,6 +42,9 @@ get_service_command() {
             ;;
         databento)
             echo "python -u start_databento_client.py"
+            ;;
+        scalper)
+            echo "python -u scalping_cli.py --run"
             ;;
         dashboard)
             echo "streamlit run scalping_dashboard.py --server.headless true"

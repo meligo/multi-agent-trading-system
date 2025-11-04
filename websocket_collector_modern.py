@@ -52,7 +52,7 @@ class ModernWebSocketCollector:
     Subscribes to TICK data and aggregates into 1-minute candles.
     """
 
-    def __init__(self, data_hub=None):
+    def __init__(self, data_hub=None, db_persistence=None):
         """Initialize collector."""
         if not TRADING_IG_AVAILABLE:
             raise ImportError("trading_ig required")
@@ -80,6 +80,13 @@ class ModernWebSocketCollector:
             except Exception as e:
                 logger.warning(f"⚠️  DataHub not available: {e}")
 
+        # Database persistence
+        self.db_persistence = db_persistence
+        if self.db_persistence:
+            logger.info("✅ Database persistence enabled")
+        else:
+            logger.warning("⚠️  Database persistence not enabled - data will NOT be saved")
+
         # Tick aggregation for 1-minute candles
         self.forming_candles: Dict[str, Dict] = {}
         self.latest_ticks: Dict[str, Dict] = {}
@@ -87,6 +94,7 @@ class ModernWebSocketCollector:
         # Statistics
         self.ticks_received = 0
         self.candles_completed = 0
+        self.ticks_saved_to_db = 0
         self.start_time = datetime.now()
 
     def connect(self):
@@ -167,7 +175,9 @@ class ModernWebSocketCollector:
         logger.info("⚙️  Starting tick processing loop...")
 
         last_status = time.time()
+        last_db_flush = time.time()
         status_interval = 60  # Print status every 60 seconds
+        db_flush_interval = 10  # Flush database every 10 seconds
 
         try:
             while True:
@@ -187,6 +197,16 @@ class ModernWebSocketCollector:
                     except Exception as e:
                         if self.ticks_received % 100 == 0:  # Log occasionally
                             logger.warning(f"⚠️  Error processing {pair}: {e}")
+
+                # Periodic database flush
+                if self.db_persistence and time.time() - last_db_flush > db_flush_interval:
+                    try:
+                        import asyncio
+                        loop = asyncio.get_event_loop()
+                        loop.create_task(self.db_persistence.flush_all_buffers())
+                        last_db_flush = time.time()
+                    except Exception as e:
+                        logger.warning(f"⚠️  Database flush failed: {e}")
 
                 # Periodic status
                 if time.time() - last_status > status_interval:
@@ -233,21 +253,39 @@ class ModernWebSocketCollector:
 
         self.ticks_received += 1
 
-        # Push to DataHub
+        # Create Tick object
+        tick = Tick(
+            symbol=pair,
+            bid=bid,
+            ask=ask,
+            mid=mid,
+            spread=spread,
+            timestamp=timestamp
+        )
+
+        # Push to DataHub (in-memory cache)
         if self.data_hub:
             try:
-                tick = Tick(
-                    symbol=pair,
-                    bid=bid,
-                    ask=ask,
-                    mid=mid,
-                    spread=spread,
-                    timestamp=timestamp
-                )
                 self.data_hub.update_tick(tick)
             except Exception as e:
                 if self.ticks_received % 100 == 0:
                     logger.warning(f"⚠️  DataHub tick update failed: {e}")
+
+        # Save to database (persistent storage)
+        if self.db_persistence:
+            try:
+                # Schedule async save in background (non-blocking)
+                # Note: We don't await this - it runs in the background
+                import asyncio
+                loop = asyncio.get_event_loop()
+                loop.create_task(self.db_persistence.save_tick(tick, source='IG'))
+                self.ticks_saved_to_db += 1
+            except RuntimeError:
+                # No event loop running - use run_coroutine_threadsafe
+                pass
+            except Exception as e:
+                if self.ticks_received % 100 == 0:
+                    logger.warning(f"⚠️  Database save failed: {e}")
 
         # Aggregate into 1-minute candle
         self._aggregate_tick_to_candle(pair, mid, timestamp)
@@ -325,6 +363,12 @@ class ModernWebSocketCollector:
         logger.info(f"   Candles: {self.candles_completed:,}")
         logger.info(f"   Pairs: {len(self.pairs)}")
 
+        # Database status
+        if self.db_persistence:
+            logger.info(f"   Database: ✅ {self.ticks_saved_to_db:,} ticks saved")
+        else:
+            logger.info(f"   Database: ❌ NOT SAVING DATA")
+
         # Show latest spreads
         logger.info(f"\n   Latest Spreads:")
         for pair, tick_data in self.latest_ticks.items():
@@ -394,8 +438,8 @@ class ModernWebSocketCollector:
             logger.info("👋 Collector stopped")
 
 
-def main():
-    """Main entry point."""
+async def main_async():
+    """Async main entry point with database persistence."""
     # Check config
     if not ForexConfig.IG_API_KEY:
         logger.error("❌ IG_API_KEY not set in .env")
@@ -409,12 +453,44 @@ def main():
         logger.error("❌ IG_PASSWORD not set in .env")
         sys.exit(1)
 
+    # Initialize database persistence
+    db_persistence = None
+    try:
+        from database_persistence import initialize_persistence
+        db_persistence = await initialize_persistence()
+        logger.info("✅ Database persistence initialized")
+    except Exception as e:
+        logger.warning(f"⚠️  Database persistence failed to initialize: {e}")
+        logger.warning("⚠️  Continuing without database persistence - data will NOT be saved!")
+
     # Create and run collector
     try:
-        collector = ModernWebSocketCollector()
+        collector = ModernWebSocketCollector(db_persistence=db_persistence)
         collector.run_forever()
     except Exception as e:
         logger.error(f"❌ Failed to start: {e}")
+        raise
+    finally:
+        # Cleanup database on exit
+        if db_persistence:
+            try:
+                await db_persistence.flush_all_buffers()
+                await db_persistence.close()
+                logger.info("✅ Database persistence closed")
+            except Exception as e:
+                logger.error(f"Error closing database: {e}")
+
+
+def main():
+    """Main entry point."""
+    # Run async main
+    try:
+        import asyncio
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        logger.info("\n👋 Shutting down...")
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
         sys.exit(1)
 
 

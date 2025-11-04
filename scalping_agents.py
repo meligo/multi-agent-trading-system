@@ -15,9 +15,16 @@ from dataclasses import dataclass
 import json
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
+from logging_config import setup_file_logging
 from scalping_config import ScalpingConfig
 from scalping_indicators import ScalpingIndicators
 from dynamic_sltp import DynamicSLTPCalculator
+from pattern_detectors import get_best_pattern, detect_all_patterns, PatternDetection
+from pre_trade_gates import check_all_gates, GateResult
+import pandas as pd
+
+# Setup logging
+logger = setup_file_logging("scalping_agents", console_output=False)
 
 
 @dataclass
@@ -42,89 +49,133 @@ class FastMomentumAgent:
     Analyzes momentum on 1-minute timeframe for scalping opportunities.
     OPTIMIZED: Uses fast EMA ribbon (3,6,12), VWAP, Donchian, RSI(7), ADX(7).
     Based on GPT-5 analysis + academic research.
+
+    Now enhanced with professional pattern detection (ORB, SFP, IMPULSE).
     """
 
-    def __init__(self, llm: ChatOpenAI):
+    def __init__(self, llm: ChatOpenAI, use_pattern_detection: bool = True):
         self.llm = llm
         self.name = "Fast Momentum Agent"
+        self.use_pattern_detection = use_pattern_detection
 
     def analyze(self, market_data: Dict) -> Dict:
         """
-        Quick momentum analysis for scalping entry using optimized indicators.
+        Enhanced momentum analysis with pattern detection as ADDITIONAL CONTEXT.
+
+        Pattern detection provides rich data for the LLM to consider:
+        - Pre-trade gate results (spread, ATR, session, news, HTF)
+        - Detected patterns (ORB, SFP, IMPULSE) with scores
+        - Pattern quality breakdown (pattern, structure, volatility)
+
+        The LLM makes the final decision with this enhanced context.
 
         Args:
-            market_data: Dict with price, indicators, volume, etc.
+            market_data: Dict with price, indicators, data (DataFrame), spread, etc.
 
         Returns:
-            Dict with momentum assessment
+            Dict with momentum assessment including pattern detection context
+        """
+        pair = market_data['pair']
+        current_price = market_data['current_price']
+        data = market_data.get('data')  # DataFrame with OHLCV
+        spread = market_data.get('spread', 0)
+        indicators = market_data.get('indicators', {})
+
+        # If pattern detection disabled, use original analysis
+        if not self.use_pattern_detection:
+            return self._analyze_llm_only(market_data)
+
+        # 1. Check pre-trade gates (hard filters)
+        gates_passed, gate_results = check_all_gates(
+            data=data,
+            pair=pair,
+            current_spread=spread if spread is not None else 0,
+            current_time=datetime.utcnow()
+        )
+
+        # 2. Run pattern detection to get context data
+        best_pattern = get_best_pattern(data, pair) if data is not None and isinstance(data, pd.DataFrame) else None
+        all_patterns = detect_all_patterns(data, pair) if data is not None and isinstance(data, pd.DataFrame) else []
+
+        # 3. Build gate status summary
+        gate_status = {}
+        for result in gate_results:
+            gate_status[result.gate_name] = {
+                'passed': result.passed,
+                'reason': result.reason,
+                'metadata': result.metadata
+            }
+
+        # 4. Build pattern detection summary
+        pattern_context = {
+            'gates_passed': gates_passed,
+            'gate_status': gate_status,
+            'best_pattern': None,
+            'all_patterns': [],
+            'pattern_summary': 'No patterns detected'
+        }
+
+        if best_pattern:
+            pattern_context['best_pattern'] = {
+                'type': best_pattern.pattern_type,
+                'score': best_pattern.score,
+                'direction': best_pattern.direction,
+                'confidence': best_pattern.confidence,
+                'sub_scores': best_pattern.sub_scores,
+                'reasoning': best_pattern.reasoning,
+                'entry': best_pattern.entry_price,
+                'stop': best_pattern.stop_loss,
+                'target': best_pattern.take_profit
+            }
+
+            pattern_context['pattern_summary'] = (
+                f"{best_pattern.pattern_type} detected (Score: {best_pattern.score}/100, "
+                f"Direction: {best_pattern.direction})"
+            )
+
+        for pattern in all_patterns[:3]:  # Top 3 patterns
+            pattern_context['all_patterns'].append({
+                'type': pattern.pattern_type,
+                'score': pattern.score,
+                'direction': pattern.direction
+            })
+
+        # 5. Call LLM with ENHANCED context (original indicators + pattern detection)
+        return self._analyze_with_pattern_context(market_data, pattern_context)
+
+    def _analyze_with_pattern_context(self, market_data: Dict, pattern_context: Dict) -> Dict:
+        """
+        Call LLM with ENHANCED context including pattern detection data.
+
+        The LLM receives:
+        - All original indicators (EMA, VWAP, RSI, ADX, etc.)
+        - Pattern detection results (ORB, SFP, IMPULSE)
+        - Pre-trade gate status (spread, ATR, session, news, HTF)
+        - Pattern scores and quality breakdown
         """
         pair = market_data['pair']
         current_price = market_data['current_price']
         indicators = market_data['indicators']
 
-        # Extract OPTIMIZED indicators (EMA 3,6,12 NOT 5,10,20)
+        # Extract original indicators
         ema_3 = indicators.get('ema_3', current_price)
         ema_6 = indicators.get('ema_6', current_price)
         ema_12 = indicators.get('ema_12', current_price)
         ema_ribbon_bullish = indicators.get('ema_ribbon_bullish', False)
         ema_ribbon_bearish = indicators.get('ema_ribbon_bearish', False)
-
-        # VWAP (institutional anchor)
         vwap = indicators.get('vwap', current_price)
         above_vwap = indicators.get('above_vwap', False)
         vwap_z_score = indicators.get('vwap_z_score', 0.0)
-
-        # Donchian breakout
-        donchian_upper = indicators.get('donchian_upper', current_price * 1.001)
-        donchian_lower = indicators.get('donchian_lower', current_price * 0.999)
+        rsi = indicators.get('rsi', 50)
+        rsi_bullish = indicators.get('rsi_bullish', False)
+        rsi_bearish = indicators.get('rsi_bearish', False)
+        adx = indicators.get('adx', 0)
+        adx_trending = indicators.get('adx_trending', False)
+        volume_spike = indicators.get('volume_spike', False)
         donchian_breakout_long = indicators.get('donchian_breakout_long', False)
         donchian_breakout_short = indicators.get('donchian_breakout_short', False)
 
-        # RSI(7) NOT RSI(14)
-        rsi = indicators.get('rsi', 50)
-        rsi_bullish = indicators.get('rsi_bullish', False)  # RSI>55 with rising slope
-        rsi_bearish = indicators.get('rsi_bearish', False)  # RSI<45 with falling slope
-
-        # ADX(7) trend strength
-        adx = indicators.get('adx', 0)
-        adx_trending = indicators.get('adx_trending', False)  # ADX>18 and rising
-        di_bullish = indicators.get('di_bullish', False)
-        di_bearish = indicators.get('di_bearish', False)
-
-        # Volume
-        volume_spike = indicators.get('volume_spike', False)
-
-        # Bollinger Squeeze
-        squeeze_on = indicators.get('squeeze_on', False)
-        squeeze_off = indicators.get('squeeze_off', False)
-
-        # SuperTrend direction
-        supertrend_direction = indicators.get('supertrend_direction', 0)
-
-        # NEW: Professional Scalping Techniques
-        # Opening Range Breakout
-        orb_breakout_long = indicators.get('orb_breakout_long', False)
-        orb_breakout_short = indicators.get('orb_breakout_short', False)
-        in_orb_window = indicators.get('in_orb_window', False)
-
-        # Liquidity Sweep / SFP
-        long_sweep_detected = indicators.get('long_sweep_detected', False)
-        short_sweep_detected = indicators.get('short_sweep_detected', False)
-
-        # Impulse Move Detection
-        is_impulse = indicators.get('is_impulse', False)
-        impulse_direction = indicators.get('impulse_direction', 0)
-        first_pullback = indicators.get('first_pullback_detected', False)
-
-        # Fix Window (London Fix 15:40-16:10 GMT)
-        in_fix_window = indicators.get('in_fix_window', False)
-        fix_type = indicators.get('fix_type', None)
-
-        # VWAP Mean Reversion (choppy markets)
-        vwap_reversion_long = indicators.get('vwap_reversion_long', False)
-        vwap_reversion_short = indicators.get('vwap_reversion_short', False)
-
-        # Determine trend direction
+        # Determine trend
         if ema_ribbon_bullish and above_vwap:
             ema_trend = "BULLISH"
         elif ema_ribbon_bearish and not above_vwap:
@@ -132,60 +183,182 @@ class FastMomentumAgent:
         else:
             ema_trend = "NEUTRAL"
 
-        # RSI momentum (using RSI 7, not 14)
-        if rsi_bullish:
-            rsi_signal = "BULLISH_MOMENTUM"
-        elif rsi_bearish:
-            rsi_signal = "BEARISH_MOMENTUM"
-        elif rsi < 30:
-            rsi_signal = "OVERSOLD"
-        elif rsi > 70:
-            rsi_signal = "OVERBOUGHT"
+        # Build pattern detection summary
+        pattern_summary = pattern_context['pattern_summary']
+        gates_passed = pattern_context['gates_passed']
+        gate_status = pattern_context['gate_status']
+        best_pattern = pattern_context['best_pattern']
+
+        # Format gate results
+        gate_info = []
+        for gate_name, status in gate_status.items():
+            symbol = "✅" if status['passed'] else "❌"
+            gate_info.append(f"  {symbol} {gate_name}: {status['reason']}")
+        gates_text = "\n".join(gate_info)
+
+        # Format pattern detection results
+        if best_pattern:
+            pattern_details = f"""
+PATTERN DETECTED: {best_pattern['type']}
+- Overall Score: {best_pattern['score']}/100
+- Direction: {best_pattern['direction']}
+- Confidence: {best_pattern['confidence']:.0%}
+- Sub-Scores:
+  * Pattern Quality: {best_pattern['sub_scores']['pattern_quality']}/40
+  * Structure/Location: {best_pattern['sub_scores']['structure_location']}/35
+  * Volatility/Activity: {best_pattern['sub_scores']['volatility_activity']}/25
+- Entry: {best_pattern['entry']:.5f}
+- Stop Loss: {best_pattern['stop']:.5f}
+- Take Profit: {best_pattern['target']:.5f}
+- Reasoning: {', '.join(best_pattern['reasoning'])}"""
         else:
-            rsi_signal = "NEUTRAL"
+            pattern_details = "PATTERN DETECTED: None (no professional setups found)"
 
-        # VWAP position
-        vwap_position = "ABOVE" if above_vwap else "BELOW"
-        vwap_bias = "LONG_BIAS" if above_vwap else "SHORT_BIAS"
-
-        prompt = f"""You are a Fast Momentum Scalping Expert analyzing {pair} on 1-minute chart for 10-20 minute trades.
-Uses OPTIMIZED indicators + PROFESSIONAL TECHNIQUES: Fast EMA (3,6,12), VWAP, Donchian, RSI(7), ADX(7), ORB, SFP, Impulse Detection.
+        prompt = f"""You are a Fast Momentum Scalping Expert analyzing {pair} on 1-minute chart.
 
 CURRENT PRICE: {current_price:.5f}
 
-OPTIMIZED MOMENTUM INDICATORS:
-- EMA Ribbon (3,6,12): {ema_trend} (3: {ema_3:.5f}, 6: {ema_6:.5f}, 12: {ema_12:.5f})
-- VWAP: {vwap:.5f} → Price is {vwap_position} VWAP ({vwap_bias}) | Z-Score: {vwap_z_score:.2f}
-- Donchian Breakout: {"LONG" if donchian_breakout_long else "SHORT" if donchian_breakout_short else "NONE"}
-- RSI(7): {rsi:.1f} ({rsi_signal})
-- ADX(7): {adx:.1f} {"TRENDING" if adx_trending else "CHOPPY"} (DI: {"+" if di_bullish else "-" if di_bearish else "neutral"})
+========================================
+MOMENTUM INDICATORS (Original):
+========================================
+- EMA Ribbon (3,6,12): {ema_trend}
+  * EMA 3: {ema_3:.5f}
+  * EMA 6: {ema_6:.5f}
+  * EMA 12: {ema_12:.5f}
+- VWAP: {vwap:.5f} (Price is {"ABOVE" if above_vwap else "BELOW"})
+  * Z-Score: {vwap_z_score:.2f}
+- RSI(7): {rsi:.1f} {"(Bullish momentum)" if rsi_bullish else "(Bearish momentum)" if rsi_bearish else ""}
+- ADX(7): {adx:.1f} {"(Trending)" if adx_trending else "(Choppy)"}
 - Volume Spike: {"YES" if volume_spike else "NO"}
-- BB Squeeze: {"ON (compressed)" if squeeze_on else "OFF (released)" if squeeze_off else "normal"}
-- SuperTrend: {"BULLISH" if supertrend_direction == 1 else "BEARISH" if supertrend_direction == -1 else "neutral"}
+- Donchian Breakout: {"LONG" if donchian_breakout_long else "SHORT" if donchian_breakout_short else "NONE"}
 
-PROFESSIONAL SCALPING SETUPS:
-- Opening Range Breakout: {"LONG breakout" if orb_breakout_long else "SHORT breakout" if orb_breakout_short else "NO breakout"} {"(active window)" if in_orb_window else ""}
-- Liquidity Sweep/SFP: {"LONG sweep (fade SHORT)" if long_sweep_detected else "SHORT sweep (fade LONG)" if short_sweep_detected else "NO sweep"}
-- Impulse + Pullback: {"Impulse detected" if is_impulse else "NO impulse"} {"→ First pullback (BUY DIP)" if first_pullback and impulse_direction > 0 else "→ First pullback (SELL RALLY)" if first_pullback and impulse_direction < 0 else ""}
-- VWAP Mean Reversion: {"LONG reversion (oversold)" if vwap_reversion_long else "SHORT reversion (overbought)" if vwap_reversion_short else "NO reversion"}
-- London Fix Window: {"YES ({fix_type})" if in_fix_window else "NO"} {"- FADE extreme moves" if in_fix_window else ""}
+========================================
+PATTERN DETECTION ANALYSIS (NEW DATA):
+========================================
+{pattern_details}
 
-SCALPING RULES:
-- PRIORITIZE professional setups: ORB breakout, SFP fade, Impulse pullback (HIGH win-rate)
-- VWAP reversion only in CHOPPY markets (ADX < 18)
-- Only trade with 2+ confirmations (momentum + professional setup)
-- Avoid: choppy/ranging markets (unless VWAP reversion), weak volume, conflicting signals
+========================================
+PRE-TRADE GATES STATUS:
+========================================
+{gates_text}
 
-Is there a CLEAR, HIGH-PROBABILITY scalping setup RIGHT NOW?
+Overall Gates: {"✅ ALL PASSED" if gates_passed else "❌ SOME FAILED"}
 
-Respond in JSON format:
+========================================
+YOUR ANALYSIS:
+========================================
+You now have BOTH traditional indicators AND professional pattern detection.
+Use ALL this information to make your decision:
+
+1. Do the indicators confirm the pattern direction?
+2. Is the pattern score strong enough (≥70 recommended)?
+3. Are all pre-trade gates passed?
+4. Is there momentum + pattern + structure alignment?
+
+Even if a pattern is detected, you can REJECT if:
+- Indicators conflict with pattern direction
+- Pattern score is borderline (60-69)
+- Gates failed (spread too high, wrong session, etc.)
+- Risk/reward isn't favorable
+
+Respond in JSON:
 {{
     "has_setup": true/false,
     "direction": "BUY/SELL/NONE",
     "confidence": 0-100,
-    "setup_type": "ORB_BREAKOUT" or "SFP_FADE" or "IMPULSE_PULLBACK" or "VWAP_REVERSION" or "EMA_BREAKOUT" or "MOMENTUM_SURGE" or "NONE",
+    "setup_type": "ORB_BREAKOUT" or "SFP_FADE" or "IMPULSE_PULLBACK" or "EMA_BREAKOUT" or "NONE",
+    "key_triggers": ["list", "of", "confirmed", "signals"],
+    "reasoning": "explanation considering BOTH indicators and pattern detection"
+}}"""
+
+        response = self.llm.invoke([HumanMessage(content=prompt)])
+
+        try:
+            content = response.content.strip()
+            if content.startswith('```'):
+                lines = content.split('\n')
+                if lines[0].startswith('```'):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith('```'):
+                    lines = lines[:-1]
+                content = '\n'.join(lines).strip()
+            result = json.loads(content)
+
+            # Add pattern context to result
+            if best_pattern:
+                result['pattern_score'] = best_pattern['score']
+                result['pattern_type'] = best_pattern['type']
+                result['pattern_direction'] = best_pattern['direction']
+            else:
+                result['pattern_score'] = 0
+                result['pattern_type'] = 'NONE'
+                result['pattern_direction'] = 'NONE'
+
+            result['gates_passed'] = gates_passed
+            result['gate_summary'] = {k: v['passed'] for k, v in gate_status.items()}
+
+        except Exception as e:
+            logger.warning(f"⚠️  Fast Momentum Agent JSON parse error: {e}")
+            result = {
+                "has_setup": False,
+                "direction": "NONE",
+                "confidence": 0,
+                "setup_type": "NONE",
+                "key_triggers": [],
+                "reasoning": f"Parse error: {str(e)}",
+                "pattern_score": 0,
+                "gates_passed": gates_passed
+            }
+
+        return result
+
+    def _analyze_llm_only(self, market_data: Dict) -> Dict:
+        """Original LLM-only analysis (backward compatibility when pattern detection disabled)."""
+        pair = market_data['pair']
+        current_price = market_data['current_price']
+        indicators = market_data['indicators']
+
+        # Extract indicators
+        ema_3 = indicators.get('ema_3', current_price)
+        ema_6 = indicators.get('ema_6', current_price)
+        ema_12 = indicators.get('ema_12', current_price)
+        ema_ribbon_bullish = indicators.get('ema_ribbon_bullish', False)
+        ema_ribbon_bearish = indicators.get('ema_ribbon_bearish', False)
+        vwap = indicators.get('vwap', current_price)
+        above_vwap = indicators.get('above_vwap', False)
+        rsi = indicators.get('rsi', 50)
+        adx = indicators.get('adx', 0)
+        volume_spike = indicators.get('volume_spike', False)
+
+        # Determine trend
+        if ema_ribbon_bullish and above_vwap:
+            ema_trend = "BULLISH"
+        elif ema_ribbon_bearish and not above_vwap:
+            ema_trend = "BEARISH"
+        else:
+            ema_trend = "NEUTRAL"
+
+        prompt = f"""You are a Fast Momentum Scalping Expert analyzing {pair} on 1-minute chart.
+
+CURRENT PRICE: {current_price:.5f}
+
+MOMENTUM INDICATORS:
+- EMA Ribbon (3,6,12): {ema_trend}
+- VWAP: {vwap:.5f} (Price is {"ABOVE" if above_vwap else "BELOW"})
+- RSI(7): {rsi:.1f}
+- ADX(7): {adx:.1f}
+- Volume Spike: {"YES" if volume_spike else "NO"}
+
+Is there a CLEAR scalping setup?
+
+Respond in JSON:
+{{
+    "has_setup": true/false,
+    "direction": "BUY/SELL/NONE",
+    "confidence": 0-100,
+    "setup_type": "EMA_BREAKOUT" or "MOMENTUM_SURGE" or "NONE",
     "key_triggers": ["list", "of", "signals"],
-    "reasoning": "brief explanation focusing on which professional setup is active and momentum confirmations"
+    "reasoning": "brief explanation"
 }}"""
 
         response = self.llm.invoke([HumanMessage(content=prompt)])
@@ -201,7 +374,7 @@ Respond in JSON format:
                 content = '\n'.join(lines).strip()
             result = json.loads(content)
         except Exception as e:
-            print(f"⚠️  Fast Momentum Agent JSON parse error: {e}")
+            logger.warning(f"⚠️  Fast Momentum Agent JSON parse error: {e}")
             result = {
                 "has_setup": False,
                 "direction": "NONE",
@@ -343,7 +516,7 @@ Respond in JSON format:
                 content = '\n'.join(lines).strip()
             result = json.loads(content)
         except Exception as e:
-            print(f"⚠️  Technical Agent JSON parse error: {e}")
+            logger.warning(f"⚠️  Technical Agent JSON parse error: {e}")
             result = {
                 "supports_trade": False,
                 "direction_preferred": "NONE",
@@ -382,10 +555,13 @@ class ScalpValidator:
 
     def validate(self, momentum_analysis: Dict, technical_analysis: Dict, market_data: Dict) -> ScalpSetup:
         """
-        Final validation: Should we take this scalp?
+        Final validation with enhanced pattern detection context.
+
+        The Fast Momentum Agent now provides rich pattern detection data.
+        Validator makes final decision considering both agents + pattern scores.
 
         Args:
-            momentum_analysis: Output from FastMomentumAgent
+            momentum_analysis: Output from FastMomentumAgent (includes pattern detection data)
             technical_analysis: Output from TechnicalAgent
             market_data: Current market data
 
@@ -416,17 +592,30 @@ class ScalpValidator:
                 approved=False
             )
 
+        # Extract pattern detection data if available
+        pattern_score = momentum_analysis.get('pattern_score', 'N/A')
+        pattern_type = momentum_analysis.get('pattern_type', 'N/A')
+        pattern_direction = momentum_analysis.get('pattern_direction', 'N/A')
+        gates_passed = momentum_analysis.get('gates_passed', True)
+        gate_summary = momentum_analysis.get('gate_summary', {})
+
         prompt = f"""You are the SCALP VALIDATOR (Final Judge) for {pair}.
 
-Two agents have analyzed the setup using PROFESSIONAL TECHNIQUES + OPTIMIZED INDICATORS:
+Two agents have analyzed the setup with ENHANCED PATTERN DETECTION CONTEXT:
 
-FAST MOMENTUM AGENT:
+FAST MOMENTUM AGENT (Enhanced with Pattern Detection):
 - Has Setup: {momentum_analysis.get('has_setup')}
 - Direction: {momentum_analysis.get('direction')}
 - Confidence: {momentum_analysis.get('confidence')}%
-- Setup Type: {momentum_analysis.get('setup_type')} (ORB/SFP/IMPULSE_PULLBACK/VWAP_REVERSION/EMA_BREAKOUT)
+- Setup Type: {momentum_analysis.get('setup_type')}
 - Key Triggers: {momentum_analysis.get('key_triggers')}
 - Reasoning: {momentum_analysis.get('reasoning')}
+
+PATTERN DETECTION DATA (NEW):
+- Pattern Type: {pattern_type}
+- Pattern Score: {pattern_score}/100
+- Pattern Direction: {pattern_direction}
+- Pre-Trade Gates: {"✅ ALL PASSED" if gates_passed else f"❌ FAILED: {[k for k, v in gate_summary.items() if not v]}"}
 
 TECHNICAL AGENT:
 - Supports Trade: {technical_analysis.get('supports_trade')}
@@ -479,7 +668,7 @@ Respond in JSON format:
                 content = '\n'.join(lines).strip()
             decision = json.loads(content)
         except Exception as e:
-            print(f"⚠️  Scalp Validator JSON parse error: {e}")
+            logger.warning(f"⚠️  Scalp Validator JSON parse error: {e}")
             decision = {
                 "approved": False,
                 "direction": "NONE",
@@ -539,14 +728,14 @@ Respond in JSON format:
                         stop_loss = current_price + (sl_pips * pip_value)
 
                     # Log comparison (for analysis)
-                    print(f"📊 Dynamic SL/TP for {pair} {direction}:")
-                    print(f"   Hardcoded: TP={ScalpingConfig.TAKE_PROFIT_PIPS} / SL={ScalpingConfig.STOP_LOSS_PIPS} pips (R:R={ScalpingConfig.TAKE_PROFIT_PIPS/ScalpingConfig.STOP_LOSS_PIPS:.2f})")
-                    print(f"   Dynamic:   TP={tp_pips:.1f} / SL={sl_pips:.1f} pips (R:R={tp_pips/sl_pips:.2f})")
-                    print(f"   Method: {levels.method}, Confidence: {levels.confidence:.0%}, ATR: {levels.metadata.get('atr_pips', 0):.1f} pips")
+                    logger.info(f"📊 Dynamic SL/TP for {pair} {direction}:")
+                    logger.info(f"   Hardcoded: TP={ScalpingConfig.TAKE_PROFIT_PIPS} / SL={ScalpingConfig.STOP_LOSS_PIPS} pips (R:R={ScalpingConfig.TAKE_PROFIT_PIPS/ScalpingConfig.STOP_LOSS_PIPS:.2f})")
+                    logger.info(f"   Dynamic:   TP={tp_pips:.1f} / SL={sl_pips:.1f} pips (R:R={tp_pips/sl_pips:.2f})")
+                    logger.info(f"   Method: {levels.method}, Confidence: {levels.confidence:.0%}, ATR: {levels.metadata.get('atr_pips', 0):.1f} pips")
 
                 else:
                     # Not enough candles, fall back to hardcoded
-                    print(f"⚠️  Not enough candles for dynamic SL/TP ({len(candles)}/{ScalpingConfig.ATR_PERIOD}), using hardcoded values")
+                    logger.warning(f"⚠️  Not enough candles for dynamic SL/TP ({len(candles)}/{ScalpingConfig.ATR_PERIOD}), using hardcoded values")
                     if direction == 'BUY':
                         take_profit = current_price + (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
                         stop_loss = current_price - (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
@@ -556,7 +745,7 @@ Respond in JSON format:
 
             except Exception as e:
                 # Error calculating dynamic levels, fall back to hardcoded
-                print(f"⚠️  Error calculating dynamic SL/TP: {e}, using hardcoded values")
+                logger.warning(f"⚠️  Error calculating dynamic SL/TP: {e}, using hardcoded values")
                 if direction == 'BUY':
                     take_profit = current_price + (ScalpingConfig.TAKE_PROFIT_PIPS * pip_value)
                     stop_loss = current_price - (ScalpingConfig.STOP_LOSS_PIPS * pip_value)
@@ -727,19 +916,19 @@ class RiskManager:
         """
         # Check hard limits first
         if account_state.get('trades_today', 0) >= ScalpingConfig.MAX_TRADES_PER_DAY:
-            print(f"❌ Daily trade limit reached: {account_state['trades_today']}")
+            logger.error(f"❌ Daily trade limit reached: {account_state['trades_today']}")
             return False, 0.0
 
         if account_state.get('open_positions', 0) >= ScalpingConfig.MAX_OPEN_POSITIONS:
-            print(f"❌ Max open positions reached: {account_state['open_positions']}")
+            logger.error(f"❌ Max open positions reached: {account_state['open_positions']}")
             return False, 0.0
 
         if account_state.get('daily_pnl', 0) <= -ScalpingConfig.MAX_DAILY_LOSS_PERCENT:
-            print(f"❌ Daily loss limit hit: {account_state['daily_pnl']:.2f}%")
+            logger.error(f"❌ Daily loss limit hit: {account_state['daily_pnl']:.2f}%")
             return False, 0.0
 
         if account_state.get('consecutive_losses', 0) >= ScalpingConfig.MAX_CONSECUTIVE_LOSSES:
-            print(f"❌ Consecutive loss limit: {account_state['consecutive_losses']}")
+            logger.error(f"❌ Consecutive loss limit: {account_state['consecutive_losses']}")
             return False, 0.0
 
         prompt = f"""You are the RISK MANAGER (Final Judge) for position sizing.
@@ -781,7 +970,7 @@ Respond in JSON:
                 content = '\n'.join(lines).strip()
             decision = json.loads(content)
         except Exception as e:
-            print(f"⚠️  Risk Manager parse error: {e}")
+            logger.warning(f"⚠️  Risk Manager parse error: {e}")
             # Default to conservative
             decision = {
                 "execute": True,
@@ -808,9 +997,9 @@ Respond in JSON:
 
         final_size = min(position_size, base_size)
 
-        print(f"\n🎯 Risk Manager Decision: {'EXECUTE' if execute else 'SKIP'}")
-        print(f"   Position Size: {final_size:.2f} lots")
-        print(f"   Reasoning: {decision.get('reasoning', 'N/A')}")
+        logger.info(f"\n🎯 Risk Manager Decision: {'EXECUTE' if execute else 'SKIP'}")
+        logger.info(f"   Position Size: {final_size:.2f} lots")
+        logger.info(f"   Reasoning: {decision.get('reasoning', 'N/A')}")
 
         return execute, final_size
 
@@ -847,13 +1036,13 @@ def create_scalping_agents(config: ScalpingConfig) -> Dict:
 
 
 if __name__ == "__main__":
-    print("Scalping Agents Module")
-    print("=" * 80)
-    print("\nAgent Architecture:")
-    print("1. Fast Momentum Agent - analyzes 1m momentum")
-    print("2. Technical Agent - validates technical structure")
-    print("3. Scalp Validator (JUDGE) - final setup approval")
-    print("4. Aggressive Risk Agent - maximize opportunity")
-    print("5. Conservative Risk Agent - protect capital")
-    print("6. Risk Manager (JUDGE) - final position sizing")
-    print("\nMaintains 2-agent + judge structure for quality control")
+    logger.info(f"Scalping Agents Module")
+    logger.info(f"=" * 80)
+    logger.info(f"\nAgent Architecture:")
+    logger.info(f"1. Fast Momentum Agent - analyzes 1m momentum")
+    logger.info(f"2. Technical Agent - validates technical structure")
+    logger.info(f"3. Scalp Validator (JUDGE) - final setup approval")
+    logger.info(f"4. Aggressive Risk Agent - maximize opportunity")
+    logger.info(f"5. Conservative Risk Agent - protect capital")
+    logger.info(f"6. Risk Manager (JUDGE) - final position sizing")
+    logger.info(f"\nMaintains 2-agent + judge structure for quality control")

@@ -15,8 +15,17 @@ import json
 from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
+from logging_config import setup_file_logging
 
 from scalping_config import ScalpingConfig
+from agent_data_logger import (
+    AgentDataLogger,
+    AnalysisSession,
+    MarketSnapshot,
+    IndicatorValues,
+    AgentResponse,
+    JudgeDecision
+)
 from scalping_indicators import ScalpingIndicators
 from scalping_agents import (
     create_scalping_agents,
@@ -33,6 +42,9 @@ from ig_client import IGClient
 # Load environment variables
 env_path = Path(__file__).parent / '.env.scalper'
 load_dotenv(dotenv_path=env_path)
+
+# Setup logging
+logger = setup_file_logging("scalping_engine", console_output=False)
 
 
 @dataclass
@@ -93,16 +105,16 @@ class ScalpingEngine:
         self.account_currency = None
         if ig_client:
             self.ig_client = ig_client
-            print("✅ Using provided IG client")
+            logger.info(f"✅ Using provided IG client")
             # Try to get account currency
             try:
                 account_info = self.ig_client.get_account()
                 accounts = account_info.get("accounts", [])
                 if accounts:
                     self.account_currency = accounts[0].get("currency", "GBP")
-                    print(f"   Account currency: {self.account_currency}")
+                    logger.info(f"   Account currency: {self.account_currency}")
             except Exception as e:
-                print(f"⚠️  Could not fetch account currency: {e}")
+                logger.warning(f"⚠️  Could not fetch account currency: {e}")
                 self.account_currency = "GBP"  # Default fallback
         else:
             # Initialize from environment variables
@@ -119,7 +131,7 @@ class ScalpingEngine:
                 try:
                     self.ig_client.create_session(username=username, password=password)
                     mode = "DEMO" if is_demo else "LIVE"
-                    print(f"✅ Logged into IG Markets ({mode} mode)")
+                    logger.info(f"✅ Logged into IG Markets ({mode} mode)")
 
                     # Fetch account currency
                     try:
@@ -127,22 +139,22 @@ class ScalpingEngine:
                         accounts = account_info.get("accounts", [])
                         if accounts:
                             self.account_currency = accounts[0].get("currency", "GBP")
-                            print(f"   Account currency: {self.account_currency}")
+                            logger.info(f"   Account currency: {self.account_currency}")
                     except Exception as e:
-                        print(f"⚠️  Could not fetch account currency: {e}")
+                        logger.warning(f"⚠️  Could not fetch account currency: {e}")
                         self.account_currency = "GBP"  # Default fallback
 
                 except Exception as e:
-                    print(f"⚠️  Failed to login to IG: {e}")
-                    print("⚠️  Trading will be paper-only mode")
+                    logger.warning(f"⚠️  Failed to login to IG: {e}")
+                    logger.warning(f"⚠️  Trading will be paper-only mode")
                     self.ig_client = None
             else:
-                print("⚠️  IG credentials not found in .env.scalper")
-                print("⚠️  Trading will be paper-only mode")
+                logger.warning(f"⚠️  IG credentials not found in .env.scalper")
+                logger.warning(f"⚠️  Trading will be paper-only mode")
                 self.ig_client = None
 
         # Initialize agents
-        print("Initializing scalping agents...")
+        logger.info(f"Initializing scalping agents...")
         self.agents = create_scalping_agents(self.config)
 
         # Trading state
@@ -158,12 +170,27 @@ class ScalpingEngine:
         # Data fetcher (will be injected)
         self.data_fetcher = None
 
-        print("✅ Scalping Engine initialized")
+        # Agent data logger (optional - captures all analysis data)
+        self.agent_data_logger = None
+        self._init_agent_data_logger()
+
+        logger.info(f"✅ Scalping Engine initialized")
         self.config.display()
 
     def set_data_fetcher(self, fetcher):
         """Inject data fetcher (forex_data or similar)."""
         self.data_fetcher = fetcher
+
+    def _init_agent_data_logger(self):
+        """Initialize agent data logger if database is available."""
+        try:
+            from database_manager import DatabaseManager
+            db = DatabaseManager()
+            self.agent_data_logger = AgentDataLogger(db.conn_string)
+            logger.info("✅ Agent data logger enabled (capturing all analysis data)")
+        except Exception as e:
+            logger.warning(f"⚠️  Agent data logger disabled: {e}")
+            self.agent_data_logger = None
 
     @property
     def open_trades(self) -> Dict[str, ActiveTrade]:
@@ -185,7 +212,7 @@ class ScalpingEngine:
 
         if not is_hours:
             current_hour = datetime.utcnow().strftime("%H:%M GMT")
-            print(f"⏰ Outside trading hours: {current_hour} (trade: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} GMT)")
+            logger.info(f"⏰ Outside trading hours: {current_hour} (trade: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} GMT)")
 
         return is_hours
 
@@ -201,7 +228,7 @@ class ScalpingEngine:
             Spread in pips, or None if unable to fetch
         """
         if not self.data_fetcher:
-            print("⚠️  No data fetcher available, assuming spread = 1.0 pips")
+            logger.warning(f"⚠️  No data fetcher available, assuming spread = 1.0 pips")
             return 1.0
 
         try:
@@ -209,19 +236,19 @@ class ScalpingEngine:
 
             # Handle None spread (data not available yet)
             if spread is None:
-                print(f"⚠️  Spread not available for {pair}, skipping...")
+                logger.warning(f"⚠️  Spread not available for {pair}, skipping...")
                 return None
 
             if spread > self.config.MAX_SPREAD_PIPS:
-                print(f"❌ Spread too wide for {pair}: {spread:.1f} pips > {self.config.MAX_SPREAD_PIPS} max")
+                logger.error(f"❌ Spread too wide for {pair}: {spread:.1f} pips > {self.config.MAX_SPREAD_PIPS} max")
                 return spread
 
             if spread > self.config.SPREAD_PENALTY_THRESHOLD:
-                print(f"⚠️  High spread for {pair}: {spread:.1f} pips (will reduce position size)")
+                logger.warning(f"⚠️  High spread for {pair}: {spread:.1f} pips (will reduce position size)")
 
             return spread
         except Exception as e:
-            print(f"⚠️  Error checking spread for {pair}: {e}")
+            logger.warning(f"⚠️  Error checking spread for {pair}: {e}")
             return None
 
     # ========================================================================
@@ -238,7 +265,7 @@ class ScalpingEngine:
         # Reset daily stats if new day
         today = datetime.now().strftime("%Y-%m-%d")
         if self.daily_stats.date != today:
-            print(f"\n📅 New trading day: {today}")
+            logger.info(f"\n📅 New trading day: {today}")
             self.daily_stats = DailyStats(date=today)
 
         # Check if paused due to consecutive losses
@@ -246,33 +273,33 @@ class ScalpingEngine:
             if datetime.now() < self.daily_stats.paused_until:
                 remaining = (self.daily_stats.paused_until - datetime.now()).seconds // 60
                 if remaining % 5 == 0:  # Log every 5 minutes
-                    print(f"⏸️  Paused due to consecutive losses. Resume in {remaining} minutes")
+                    logger.warning(f"⏸️  Paused due to consecutive losses. Resume in {remaining} minutes")
                 return False
             else:
-                print(f"▶️  Resume trading after pause")
+                logger.info(f"▶️  Resume trading after pause")
                 self.daily_stats.paused_until = None
                 self.daily_stats.consecutive_losses = 0
 
         # Check max trades per day
         if self.daily_stats.trades_taken >= self.config.MAX_TRADES_PER_DAY:
-            print(f"🛑 Daily trade limit reached: {self.daily_stats.trades_taken}/{self.config.MAX_TRADES_PER_DAY}")
+            logger.warning(f"🛑 Daily trade limit reached: {self.daily_stats.trades_taken}/{self.config.MAX_TRADES_PER_DAY}")
             return False
 
         # Check max open positions
         if len(self.active_trades) >= self.config.MAX_OPEN_POSITIONS:
-            print(f"🛑 Max open positions: {len(self.active_trades)}/{self.config.MAX_OPEN_POSITIONS}")
+            logger.warning(f"🛑 Max open positions: {len(self.active_trades)}/{self.config.MAX_OPEN_POSITIONS}")
             return False
 
         # Check daily loss limit
         if self.daily_stats.total_pnl <= -self.config.MAX_DAILY_LOSS_PERCENT:
-            print(f"🛑 Daily loss limit hit: {self.daily_stats.total_pnl:.2f}% <= -{self.config.MAX_DAILY_LOSS_PERCENT}%")
+            logger.warning(f"🛑 Daily loss limit hit: {self.daily_stats.total_pnl:.2f}% <= -{self.config.MAX_DAILY_LOSS_PERCENT}%")
             return False
 
         # Check consecutive losses
         if self.daily_stats.consecutive_losses >= self.config.MAX_CONSECUTIVE_LOSSES:
             pause_until = datetime.now() + timedelta(minutes=self.config.PAUSE_AFTER_LOSSES_MINUTES)
             self.daily_stats.paused_until = pause_until
-            print(f"⏸️  Pausing for {self.config.PAUSE_AFTER_LOSSES_MINUTES} min after {self.daily_stats.consecutive_losses} losses")
+            logger.warning(f"⏸️  Pausing for {self.config.PAUSE_AFTER_LOSSES_MINUTES} min after {self.daily_stats.consecutive_losses} losses")
             return False
 
         return True
@@ -289,23 +316,30 @@ class ScalpingEngine:
             Dict with market data, or None if unable to fetch
         """
         if not self.data_fetcher:
-            print(f"⚠️  No data fetcher for {pair}")
+            logger.warning(f"⚠️  No data fetcher for {pair}")
             return None
 
         try:
             # Use UnifiedDataFetcher (aggregates all sources)
             if hasattr(self.data_fetcher, 'fetch_market_data'):
                 # New unified fetcher
-                market_data = self.data_fetcher.fetch_market_data(pair, timeframe="1m", bars=50)
+                # Request 60 bars (minimum for ATR calculation in pre-trade gates)
+                # UnifiedDataFetcher requires 50% of bars minimum, so 60 * 0.5 = 30 bars minimum
+                market_data = self.data_fetcher.fetch_market_data(pair, timeframe="1m", bars=60)
 
                 if not market_data or market_data.get('candles') is None:
-                    print(f"⚠️  No candle data for {pair}")
+                    logger.warning(f"⚠️  No candle data for {pair} (0/30 candles - need 30 more)")
                     return None
 
                 data = market_data['candles']
 
-                if len(data) < 20:
-                    print(f"⚠️  Insufficient data for {pair}")
+                # We request 60 bars, but UnifiedDataFetcher minimum is 30 (50% of 60)
+                # Pre-trade ATR gate needs 60 bars ideally, but will work with 30+
+                min_required = 30
+
+                if len(data) < min_required:
+                    need_more = min_required - len(data)
+                    logger.warning(f"⚠️  Insufficient data for {pair} ({len(data)}/{min_required} candles - need {need_more} more)")
                     return None
 
                 # Store additional market data
@@ -315,10 +349,14 @@ class ScalpingEngine:
 
             else:
                 # Legacy fetcher (old format)
-                data = self.data_fetcher.fetch_data(pair, timeframe="1m", bars=50)
+                # Request 60 bars (minimum for ATR calculation in pre-trade gates)
+                data = self.data_fetcher.fetch_data(pair, timeframe="1m", bars=60)
 
-                if not data or len(data) < 20:
-                    print(f"⚠️  Insufficient data for {pair}")
+                min_required = 30
+                if not data or len(data) < min_required:
+                    current_count = len(data) if data is not None else 0
+                    need_more = min_required - current_count
+                    logger.warning(f"⚠️  Insufficient data for {pair} ({current_count}/{min_required} candles - need {need_more} more)")
                     return None
 
             current_price = data['close'].iloc[-1]
@@ -550,8 +588,8 @@ class ScalpingEngine:
 
         except Exception as e:
             import traceback
-            print(f"❌ Error fetching data for {pair}: {e}")
-            print(f"📍 Full traceback:")
+            logger.error(f"❌ Error fetching data for {pair}: {e}")
+            logger.info(f"📍 Full traceback:")
             traceback.print_exc()
             return None
 
@@ -581,22 +619,115 @@ class ScalpingEngine:
         Returns:
             ScalpSetup if approved, None otherwise
         """
-        print(f"\n{'='*80}")
-        print(f"📊 Analyzing {pair} at {datetime.now().strftime('%H:%M:%S')}")
-        print(f"{'='*80}")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📊 Analyzing {pair} at {datetime.now().strftime('%H:%M:%S')}")
+        logger.info(f"{'='*80}")
+
+        # Generate unique session ID for this analysis
+        session_id = f"{pair}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
 
         # Fetch data
         market_data = self.fetch_market_data(pair)
         if not market_data:
             return None
 
+        # Log analysis session start
+        if self.agent_data_logger:
+            try:
+                self.agent_data_logger.log_analysis_session(
+                    AnalysisSession(
+                        session_id=session_id,
+                        pair=pair,
+                        timestamp=datetime.now(),
+                        current_price=market_data.get('current_price', 0),
+                        spread_pips=market_data.get('spread', 0),
+                        trading_hours=self.is_trading_hours(),
+                        can_trade=self.check_daily_limits()
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log session: {e}")
+
+        # Log market snapshot
+        if self.agent_data_logger:
+            try:
+                data = market_data.get('data')
+                if data is not None:
+                    # Convert last 50 candles to JSON
+                    candles_df = data[['open', 'high', 'low', 'close', 'volume']].tail(50)
+                    candles_json = candles_df.to_json(orient='records')
+
+                    self.agent_data_logger.log_market_snapshot(
+                        MarketSnapshot(
+                            session_id=session_id,
+                            pair=pair,
+                            timestamp=datetime.now(),
+                            candles_json=candles_json,
+                            current_price=market_data.get('current_price', 0),
+                            bid=market_data.get('current_price', 0) - market_data.get('spread', 0) / 2,
+                            ask=market_data.get('current_price', 0) + market_data.get('spread', 0) / 2,
+                            spread=market_data.get('spread', 0),
+                            nearest_support=market_data.get('nearest_support'),
+                            nearest_resistance=market_data.get('nearest_resistance')
+                        )
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to log market snapshot: {e}")
+
+        # Log all indicators
+        if self.agent_data_logger:
+            try:
+                data = market_data.get('data')
+                if data is not None and len(data) > 0:
+                    # Extract latest indicator values
+                    last_row = data.iloc[-1]
+
+                    self.agent_data_logger.log_indicators(
+                        IndicatorValues(
+                            session_id=session_id,
+                            pair=pair,
+                            timestamp=datetime.now(),
+                            # EMA Ribbon
+                            ema_3=float(last_row.get('ema_3')) if 'ema_3' in last_row else None,
+                            ema_6=float(last_row.get('ema_6')) if 'ema_6' in last_row else None,
+                            ema_12=float(last_row.get('ema_12')) if 'ema_12' in last_row else None,
+                            ema_alignment=market_data.get('ema_alignment'),
+                            # RSI
+                            rsi=float(last_row.get('rsi')) if 'rsi' in last_row else None,
+                            rsi_zone=market_data.get('rsi_zone'),
+                            # MACD
+                            macd=float(last_row.get('macd')) if 'macd' in last_row else None,
+                            macd_signal=float(last_row.get('macd_signal')) if 'macd_signal' in last_row else None,
+                            macd_histogram=float(last_row.get('macd_histogram')) if 'macd_histogram' in last_row else None,
+                            macd_cross=market_data.get('macd_cross'),
+                            # Bollinger Bands
+                            bb_upper=float(last_row.get('bb_upper')) if 'bb_upper' in last_row else None,
+                            bb_middle=float(last_row.get('bb_middle')) if 'bb_middle' in last_row else None,
+                            bb_lower=float(last_row.get('bb_lower')) if 'bb_lower' in last_row else None,
+                            bb_width=float(last_row.get('bb_width')) if 'bb_width' in last_row else None,
+                            price_position=market_data.get('price_position'),
+                            # Volume
+                            volume_ma=float(last_row.get('volume_ma')) if 'volume_ma' in last_row else None,
+                            volume_surge=market_data.get('volume_surge'),
+                            # Momentum
+                            momentum_strength=market_data.get('momentum_strength'),
+                            momentum_direction=market_data.get('momentum_direction'),
+                            # ATR
+                            atr=float(last_row.get('atr')) if 'atr' in last_row else None,
+                            atr_pips=market_data.get('atr_pips')
+                        )
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to log indicators: {e}")
+
         # Run agents with timeout handling
-        print(f"\n🚀 Fast Momentum Agent analyzing...")
+        logger.info(f"\n🚀 Fast Momentum Agent analyzing...")
+        start_time = time.time()
         try:
             momentum_analysis = self.agents["momentum"].analyze(market_data)
-            print(f"   Result: {momentum_analysis.get('setup_type', 'NONE')} - {momentum_analysis.get('direction', 'NONE')}")
+            logger.info(f"   Result: {momentum_analysis.get('setup_type', 'NONE')} - {momentum_analysis.get('direction', 'NONE')}")
         except Exception as e:
-            print(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
+            logger.info(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
             # Fallback: neutral momentum analysis
             momentum_analysis = {
                 "setup_type": "NONE",
@@ -604,24 +735,64 @@ class ScalpingEngine:
                 "strength": 0.0,
                 "reasoning": f"Agent timeout: {str(e)[:50]}"
             }
+        execution_time = (time.time() - start_time) * 1000
 
-        print(f"\n🔧 Technical Agent analyzing...")
+        # Log Fast Momentum Agent response
+        if self.agent_data_logger:
+            try:
+                self.agent_data_logger.log_agent_response(
+                    AgentResponse(
+                        session_id=session_id,
+                        agent_name="fast_momentum",
+                        timestamp=datetime.now(),
+                        response_json=json.dumps(momentum_analysis),
+                        recommendation=momentum_analysis.get('setup_type'),
+                        confidence=momentum_analysis.get('strength'),
+                        reasoning=momentum_analysis.get('reasoning'),
+                        execution_time_ms=execution_time
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log momentum agent: {e}")
+
+        logger.info(f"\n🔧 Technical Agent analyzing...")
+        start_time = time.time()
         try:
             technical_analysis = self.agents["technical"].analyze(market_data)
-            print(f"   Result: {'Supports' if technical_analysis.get('supports_trade') else 'Rejects'} trade")
+            logger.info(f"   Result: {'Supports' if technical_analysis.get('supports_trade') else 'Rejects'} trade")
         except Exception as e:
-            print(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
+            logger.info(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
             # Fallback: reject trade
             technical_analysis = {
                 "supports_trade": False,
                 "reasoning": f"Agent timeout: {str(e)[:50]}"
             }
+        execution_time = (time.time() - start_time) * 1000
 
-        print(f"\n⚖️  Scalp Validator (Judge) deciding...")
+        # Log Technical Agent response
+        if self.agent_data_logger:
+            try:
+                self.agent_data_logger.log_agent_response(
+                    AgentResponse(
+                        session_id=session_id,
+                        agent_name="technical",
+                        timestamp=datetime.now(),
+                        response_json=json.dumps(technical_analysis),
+                        recommendation="SUPPORT" if technical_analysis.get('supports_trade') else "REJECT",
+                        confidence=technical_analysis.get('confidence'),
+                        reasoning=technical_analysis.get('reasoning'),
+                        execution_time_ms=execution_time
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log technical agent: {e}")
+
+        logger.info(f"\n⚖️  Scalp Validator (Judge) deciding...")
+        start_time = time.time()
         try:
             scalp_setup = self.agents["validator"].validate(momentum_analysis, technical_analysis, market_data)
         except Exception as e:
-            print(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
+            logger.info(f"   ⚠️  Timeout/Error: {str(e)[:100]}")
             # Fallback: create rejected setup
             from scalping_agents import ScalpSetup
             scalp_setup = ScalpSetup(
@@ -637,12 +808,42 @@ class ScalpingEngine:
                 risk_tier=3,
                 approved=False
             )
+        execution_time = (time.time() - start_time) * 1000
 
         if scalp_setup.approved:
-            print(f"   ✅ APPROVED: {scalp_setup.direction} {scalp_setup.pair}")
-            print(f"   Confidence: {scalp_setup.confidence*100:.0f}%, Tier: {scalp_setup.risk_tier}")
+            logger.info(f"   ✅ APPROVED: {scalp_setup.direction} {scalp_setup.pair}")
+            logger.info(f"   Confidence: {scalp_setup.confidence*100:.0f}%, Tier: {scalp_setup.risk_tier}")
         else:
-            print(f"   ❌ REJECTED: {scalp_setup.reasoning[0] if scalp_setup.reasoning else 'No reason'}")
+            logger.info(f"   ❌ REJECTED: {scalp_setup.reasoning[0] if scalp_setup.reasoning else 'No reason'}")
+
+        # Log Scalp Validator decision
+        if self.agent_data_logger:
+            try:
+                from dataclasses import asdict
+                self.agent_data_logger.log_judge_decision(
+                    JudgeDecision(
+                        session_id=session_id,
+                        judge_name="scalp_validator",
+                        timestamp=datetime.now(),
+                        approved=scalp_setup.approved,
+                        decision_json=json.dumps(asdict(scalp_setup), default=str),
+                        direction=scalp_setup.direction,
+                        entry_price=scalp_setup.entry_price,
+                        take_profit=scalp_setup.take_profit,
+                        stop_loss=scalp_setup.stop_loss,
+                        position_size=None,  # Set by Risk Manager
+                        confidence=scalp_setup.confidence,
+                        risk_tier=scalp_setup.risk_tier,
+                        reasoning='; '.join(scalp_setup.reasoning) if scalp_setup.reasoning else None,
+                        execution_time_ms=execution_time
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log validator decision: {e}")
+
+        # Store session_id for risk management logging
+        if scalp_setup.approved:
+            scalp_setup.session_id = session_id  # Add session_id to scalp_setup
 
         return scalp_setup if scalp_setup.approved else None
 
@@ -653,9 +854,9 @@ class ScalpingEngine:
         Returns:
             Tuple of (execute: bool, position_size: float)
         """
-        print(f"\n{'='*80}")
-        print(f"⚠️  RISK MANAGEMENT DEBATE")
-        print(f"{'='*80}")
+        logger.info(f"\n{'='*80}")
+        logger.warning(f"⚠️  RISK MANAGEMENT DEBATE")
+        logger.info(f"{'='*80}")
 
         account_state = {
             "trades_today": self.daily_stats.trades_taken,
@@ -664,18 +865,92 @@ class ScalpingEngine:
             "consecutive_losses": self.daily_stats.consecutive_losses
         }
 
-        print(f"\n💪 Aggressive Risk Agent analyzing...")
+        # Get session_id from scalp_setup (added during validation)
+        session_id = getattr(scalp_setup, 'session_id', None)
+
+        logger.info(f"\n💪 Aggressive Risk Agent analyzing...")
+        start_time = time.time()
         aggressive = self.agents["aggressive_risk"].analyze(scalp_setup, account_state)
-        print(f"   Recommendation: {aggressive.get('recommendation')}")
+        logger.info(f"   Recommendation: {aggressive.get('recommendation')}")
+        execution_time = (time.time() - start_time) * 1000
 
-        print(f"\n🛡️  Conservative Risk Agent analyzing...")
+        # Log Aggressive Risk Agent
+        if self.agent_data_logger and session_id:
+            try:
+                self.agent_data_logger.log_agent_response(
+                    AgentResponse(
+                        session_id=session_id,
+                        agent_name="aggressive_risk",
+                        timestamp=datetime.now(),
+                        response_json=json.dumps(aggressive),
+                        recommendation=aggressive.get('recommendation'),
+                        confidence=aggressive.get('confidence'),
+                        reasoning=aggressive.get('reasoning'),
+                        execution_time_ms=execution_time
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log aggressive risk agent: {e}")
+
+        logger.info(f"\n🛡️  Conservative Risk Agent analyzing...")
+        start_time = time.time()
         conservative = self.agents["conservative_risk"].analyze(scalp_setup, account_state)
-        print(f"   Recommendation: {conservative.get('recommendation')}")
+        logger.info(f"   Recommendation: {conservative.get('recommendation')}")
+        execution_time = (time.time() - start_time) * 1000
 
-        print(f"\n⚖️  Risk Manager (Judge) deciding...")
+        # Log Conservative Risk Agent
+        if self.agent_data_logger and session_id:
+            try:
+                self.agent_data_logger.log_agent_response(
+                    AgentResponse(
+                        session_id=session_id,
+                        agent_name="conservative_risk",
+                        timestamp=datetime.now(),
+                        response_json=json.dumps(conservative),
+                        recommendation=conservative.get('recommendation'),
+                        confidence=conservative.get('confidence'),
+                        reasoning=conservative.get('reasoning'),
+                        execution_time_ms=execution_time
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log conservative risk agent: {e}")
+
+        logger.info(f"\n⚖️  Risk Manager (Judge) deciding...")
+        start_time = time.time()
         execute, position_size = self.agents["risk_manager"].decide(
             scalp_setup, aggressive, conservative, account_state
         )
+        execution_time = (time.time() - start_time) * 1000
+
+        # Log Risk Manager decision
+        if self.agent_data_logger and session_id:
+            try:
+                self.agent_data_logger.log_judge_decision(
+                    JudgeDecision(
+                        session_id=session_id,
+                        judge_name="risk_manager",
+                        timestamp=datetime.now(),
+                        approved=execute,
+                        decision_json=json.dumps({
+                            'execute': execute,
+                            'position_size': position_size,
+                            'aggressive': aggressive,
+                            'conservative': conservative
+                        }),
+                        direction=scalp_setup.direction,
+                        entry_price=scalp_setup.entry_price,
+                        take_profit=scalp_setup.take_profit,
+                        stop_loss=scalp_setup.stop_loss,
+                        position_size=position_size if execute else 0,
+                        confidence=scalp_setup.confidence,
+                        risk_tier=scalp_setup.risk_tier,
+                        reasoning=f"Execute: {execute}, Size: {position_size:.2f} lots",
+                        execution_time_ms=execution_time
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log risk manager decision: {e}")
 
         return execute, position_size
 
@@ -700,7 +975,7 @@ class ScalpingEngine:
         # Get IG epic code
         epic = self.config.IG_EPIC_MAP.get(scalp_setup.pair)
         if not epic:
-            print(f"⚠️  No IG epic found for {scalp_setup.pair}")
+            logger.warning(f"⚠️  No IG epic found for {scalp_setup.pair}")
             return False
 
         deal_id = None
@@ -708,10 +983,10 @@ class ScalpingEngine:
         # Execute on IG if client is available
         if self.ig_client:
             try:
-                print(f"\n📤 Sending order to IG Markets...")
-                print(f"   Epic: {epic}")
-                print(f"   Direction: {scalp_setup.direction}")
-                print(f"   Size: {position_size} lots")
+                logger.info(f"\n📤 Sending order to IG Markets...")
+                logger.info(f"   Epic: {epic}")
+                logger.info(f"   Direction: {scalp_setup.direction}")
+                logger.info(f"   Size: {position_size} lots")
 
                 # Calculate pip distances correctly
                 # JPY pairs: 2 decimals (0.01 = 1 pip), Others: 4 decimals (0.0001 = 1 pip)
@@ -720,9 +995,9 @@ class ScalpingEngine:
                 limit_pips = abs(scalp_setup.take_profit - scalp_setup.entry_price) * pip_multiplier
                 stop_pips = abs(scalp_setup.entry_price - scalp_setup.stop_loss) * pip_multiplier
 
-                print(f"   TP Distance: {limit_pips:.1f} pips")
-                print(f"   SL Distance: {stop_pips:.1f} pips")
-                print(f"   Currency: {self.account_currency or 'GBP'}")
+                logger.info(f"   TP Distance: {limit_pips:.1f} pips")
+                logger.info(f"   SL Distance: {stop_pips:.1f} pips")
+                logger.info(f"   Currency: {self.account_currency or 'GBP'}")
 
                 # Create position on IG
                 response = self.ig_client.create_position(
@@ -739,15 +1014,15 @@ class ScalpingEngine:
                 )
 
                 deal_id = response.get("dealReference") or response.get("dealId")
-                print(f"✅ IG Order Accepted!")
-                print(f"   Deal ID: {deal_id}")
+                logger.info(f"✅ IG Order Accepted!")
+                logger.info(f"   Deal ID: {deal_id}")
 
             except Exception as e:
-                print(f"❌ IG Order Failed: {e}")
-                print(f"⚠️  Falling back to paper trading")
+                logger.error(f"❌ IG Order Failed: {e}")
+                logger.warning(f"⚠️  Falling back to paper trading")
                 deal_id = None
         else:
-            print(f"\n📝 Paper Trading Mode (No IG client)")
+            logger.info(f"\n📝 Paper Trading Mode (No IG client)")
 
         # Create active trade record
         trade = ActiveTrade(
@@ -771,13 +1046,13 @@ class ScalpingEngine:
         self.daily_stats.last_trade_time = datetime.now()
 
         mode = "LIVE" if deal_id else "PAPER"
-        print(f"\n✅ TRADE EXECUTED ({mode}): {trade_id}")
-        print(f"   {trade.direction} {trade.pair} @ {trade.entry_price:.5f}")
-        print(f"   TP: {trade.take_profit:.5f} | SL: {trade.stop_loss:.5f}")
-        print(f"   Size: {trade.position_size:.2f} lots")
+        logger.info(f"\n✅ TRADE EXECUTED ({mode}): {trade_id}")
+        logger.info(f"   {trade.direction} {trade.pair} @ {trade.entry_price:.5f}")
+        logger.info(f"   TP: {trade.take_profit:.5f} | SL: {trade.stop_loss:.5f}")
+        logger.info(f"   Size: {trade.position_size:.2f} lots")
         if deal_id:
-            print(f"   IG Deal ID: {deal_id}")
-        print(f"   Max Duration: {self.config.MAX_TRADE_DURATION_MINUTES} minutes")
+            logger.info(f"   IG Deal ID: {deal_id}")
+        logger.info(f"   Max Duration: {self.config.MAX_TRADE_DURATION_MINUTES} minutes")
 
         return True
 
@@ -802,7 +1077,7 @@ class ScalpingEngine:
                     duration = (now - trade.entry_time).total_seconds() / 60
 
                     if duration >= self.config.MAX_TRADE_DURATION_MINUTES:
-                        print(f"\n⏰ 20-MINUTE LIMIT: Force-closing {trade_id}")
+                        logger.info(f"\n⏰ 20-MINUTE LIMIT: Force-closing {trade_id}")
                         self.close_trade(trade_id, "MAX_DURATION")
                         continue
 
@@ -814,24 +1089,24 @@ class ScalpingEngine:
                     # Check TP/SL
                     if trade.direction == "BUY":
                         if current_price >= trade.take_profit:
-                            print(f"\n🎯 TAKE PROFIT HIT: {trade_id}")
+                            logger.info(f"\n🎯 TAKE PROFIT HIT: {trade_id}")
                             self.close_trade(trade_id, "TAKE_PROFIT", current_price)
                         elif current_price <= trade.stop_loss:
-                            print(f"\n🛑 STOP LOSS HIT: {trade_id}")
+                            logger.info(f"\n🛑 STOP LOSS HIT: {trade_id}")
                             self.close_trade(trade_id, "STOP_LOSS", current_price)
                     else:  # SELL
                         if current_price <= trade.take_profit:
-                            print(f"\n🎯 TAKE PROFIT HIT: {trade_id}")
+                            logger.info(f"\n🎯 TAKE PROFIT HIT: {trade_id}")
                             self.close_trade(trade_id, "TAKE_PROFIT", current_price)
                         elif current_price >= trade.stop_loss:
-                            print(f"\n🛑 STOP LOSS HIT: {trade_id}")
+                            logger.info(f"\n🛑 STOP LOSS HIT: {trade_id}")
                             self.close_trade(trade_id, "STOP_LOSS", current_price)
 
                 # Sleep for check interval
                 time.sleep(self.config.AUTO_CLOSE_CHECK_INTERVAL_SECONDS)
 
             except Exception as e:
-                print(f"❌ Error in trade monitor: {e}")
+                logger.error(f"❌ Error in trade monitor: {e}")
                 time.sleep(5)
 
     def close_trade(self, trade_id: str, reason: str, exit_price: Optional[float] = None):
@@ -844,9 +1119,9 @@ class ScalpingEngine:
         # Close on IG if we have a deal_id
         if trade.deal_id and self.ig_client:
             try:
-                print(f"\n📤 Closing position on IG Markets...")
-                print(f"   Deal ID: {trade.deal_id}")
-                print(f"   Reason: {reason}")
+                logger.info(f"\n📤 Closing position on IG Markets...")
+                logger.info(f"   Deal ID: {trade.deal_id}")
+                logger.info(f"   Reason: {reason}")
 
                 # Close the position (use opposite direction)
                 close_direction = "SELL" if trade.direction == "BUY" else "BUY"
@@ -858,12 +1133,12 @@ class ScalpingEngine:
                     order_type="MARKET"
                 )
 
-                print(f"✅ IG Position Closed!")
-                print(f"   Deal Reference: {response.get('dealReference')}")
+                logger.info(f"✅ IG Position Closed!")
+                logger.info(f"   Deal Reference: {response.get('dealReference')}")
 
             except Exception as e:
-                print(f"⚠️  IG close failed: {e}")
-                print(f"   (Trade will still be closed locally)")
+                logger.warning(f"⚠️  IG close failed: {e}")
+                logger.info(f"   (Trade will still be closed locally)")
 
         # Get exit price
         if exit_price is None:
@@ -901,11 +1176,11 @@ class ScalpingEngine:
 
         duration_minutes = (trade.exit_time - trade.entry_time).total_seconds() / 60
 
-        print(f"\n{result_emoji} TRADE CLOSED: {trade_id}")
-        print(f"   Reason: {reason}")
-        print(f"   P&L: {pnl_pips:+.1f} pips (${pnl_dollars:+.2f})")
-        print(f"   Duration: {duration_minutes:.1f} minutes")
-        print(f"   Daily Stats: {self.daily_stats.trades_won}W / {self.daily_stats.trades_lost}L")
+        logger.info(f"\n{result_emoji} TRADE CLOSED: {trade_id}")
+        logger.info(f"   Reason: {reason}")
+        logger.info(f"   P&L: {pnl_pips:+.1f} pips (${pnl_dollars:+.2f})")
+        logger.info(f"   Duration: {duration_minutes:.1f} minutes")
+        logger.info(f"   Daily Stats: {self.daily_stats.trades_won}W / {self.daily_stats.trades_lost}L")
 
         # Add to trade history for performance stats
         self.trade_history.append({
@@ -949,9 +1224,9 @@ class ScalpingEngine:
         4. Execute approved scalps
         5. Monitor active trades
         """
-        print(f"\n{'='*80}")
-        print(f"🚀 SCALPING ENGINE STARTED")
-        print(f"{'='*80}\n")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"🚀 SCALPING ENGINE STARTED")
+        logger.info(f"{'='*80}\n")
 
         self.running = True
 
@@ -988,14 +1263,14 @@ class ScalpingEngine:
                                 self.execute_trade(scalp_setup, position_size)
 
                     except Exception as e:
-                        print(f"❌ Error analyzing {pair}: {e}")
+                        logger.error(f"❌ Error analyzing {pair}: {e}")
 
                 # Wait for next analysis cycle
-                print(f"\n⏳ Next scan in {self.config.ANALYSIS_INTERVAL_SECONDS}s...")
+                logger.info(f"\n⏳ Next scan in {self.config.ANALYSIS_INTERVAL_SECONDS}s...")
                 time.sleep(self.config.ANALYSIS_INTERVAL_SECONDS)
 
         except KeyboardInterrupt:
-            print(f"\n\n⏹️  Stopping scalping engine...")
+            logger.info(f"\n\n⏹️  Stopping scalping engine...")
         finally:
             self.stop()
 
@@ -1005,16 +1280,16 @@ class ScalpingEngine:
         if self.monitor_thread:
             self.monitor_thread.join(timeout=5)
 
-        print(f"\n{'='*80}")
-        print(f"📊 DAILY SUMMARY")
-        print(f"{'='*80}")
-        print(f"Trades: {self.daily_stats.trades_taken}")
-        print(f"Wins: {self.daily_stats.trades_won}")
-        print(f"Losses: {self.daily_stats.trades_lost}")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📊 DAILY SUMMARY")
+        logger.info(f"{'='*80}")
+        logger.info(f"Trades: {self.daily_stats.trades_taken}")
+        logger.info(f"Wins: {self.daily_stats.trades_won}")
+        logger.info(f"Losses: {self.daily_stats.trades_lost}")
         win_rate = (self.daily_stats.trades_won / self.daily_stats.trades_taken * 100) if self.daily_stats.trades_taken > 0 else 0
-        print(f"Win Rate: {win_rate:.1f}%")
-        print(f"Total P&L: {self.daily_stats.total_pnl:+.2f}%")
-        print(f"{'='*80}\n")
+        logger.info(f"Win Rate: {win_rate:.1f}%")
+        logger.info(f"Total P&L: {self.daily_stats.total_pnl:+.2f}%")
+        logger.info(f"{'='*80}\n")
 
     # ========================================================================
     # DASHBOARD API METHODS
@@ -1100,7 +1375,7 @@ class ScalpingEngine:
 if __name__ == "__main__":
     # Test engine initialization
     engine = ScalpingEngine()
-    print("\n✅ Scalping engine ready")
-    print("\nTo run:")
-    print("  engine.set_data_fetcher(your_data_source)")
-    print("  engine.run()")
+    logger.info(f"\n✅ Scalping engine ready")
+    logger.info(f"\nTo run:")
+    logger.info(f"  engine.set_data_fetcher(your_data_source)")
+    logger.info(f"  engine.run()")

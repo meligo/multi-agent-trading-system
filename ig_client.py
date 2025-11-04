@@ -14,6 +14,10 @@ from typing import Any, Dict, Optional, Union
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from logging_config import setup_file_logging
+
+# Setup logging
+logger = setup_file_logging("ig_client", console_output=False)
 
 
 class IGApiError(Exception):
@@ -428,17 +432,17 @@ IG_FOREX_PAIRS = {
 
 # Test connection
 if __name__ == "__main__":
-    print("="*80)
-    print("IG API CLIENT TEST")
-    print("="*80)
+    logger.info(f"="*80)
+    logger.info(f"IG API CLIENT TEST")
+    logger.info(f"="*80)
 
     API_KEY = "2f6287777a79dfb0c6f2a47c86a6f7d0b07ecef8"
 
-    print(f"\nAvailable forex pairs: {len(IG_FOREX_PAIRS)}")
-    print("Sample EPICs:")
+    logger.info(f"\nAvailable forex pairs: {len(IG_FOREX_PAIRS)}")
+    logger.info(f"Sample EPICs:")
     for i, (pair, epic) in enumerate(list(IG_FOREX_PAIRS.items())[:5]):
-        print(f"  {pair}: {epic}")
+        logger.info(f"  {pair}: {epic}")
 
-    print(f"\n✅ IG Client ready for integration")
-    print(f"   API Key: {API_KEY[:20]}...")
-    print(f"   Demo URL: https://demo-api.ig.com/gateway/deal")
+    logger.info(f"\n✅ IG Client ready for integration")
+    logger.info(f"   API Key: {API_KEY[:20]}...")
+    logger.info(f"   Demo URL: https://demo-api.ig.com/gateway/deal")

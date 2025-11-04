@@ -145,17 +145,19 @@ def run_engine():
         # Initialize engine
         engine = ScalpingEngine()
 
-        # Set up data fetcher
-        from forex_data import ForexAnalyzer
+        # Set up data fetcher (UnifiedDataFetcher with DataHub)
+        from data_hub import get_data_hub_from_env
+        from unified_data_fetcher import UnifiedDataFetcher
 
-        print("Connecting to IG Markets...")
-        data_fetcher = ForexAnalyzer(
-            api_key=ScalpingConfig.IG_API_KEY,
-            username=ScalpingConfig.IG_USERNAME,
-            password=ScalpingConfig.IG_PASSWORD,
-            acc_number=ScalpingConfig.IG_ACC_NUMBER,
-            demo=ScalpingConfig.IG_DEMO
-        )
+        print("Connecting to DataHub...")
+        data_hub = get_data_hub_from_env()
+        if data_hub is None:
+            print("❌ Failed to connect to DataHub. Make sure DataHub server is running.")
+            print("   Start it with: python start_datahub_server.py")
+            return
+
+        print("✅ DataHub connected")
+        data_fetcher = UnifiedDataFetcher(data_hub=data_hub)
         engine.set_data_fetcher(data_fetcher)
 
         print("✅ Connected")
