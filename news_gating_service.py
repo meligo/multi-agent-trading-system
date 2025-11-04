@@ -18,6 +18,7 @@ from pathlib import Path
 import asyncio
 from dataclasses import dataclass
 from enum import Enum
+from contextlib import AsyncExitStack
 
 from insightsentry_client import InsightSentryClient
 from database_manager import DatabaseManager
@@ -88,11 +89,15 @@ class NewsGatingService:
         Args:
             config: Gate configuration
             db_manager: Database manager
-            insightsentry_client: InsightSentry client
+            insightsentry_client: InsightSentry client (optional, will create if not provided)
         """
         self.config = config or GateConfig()
         self.db = db_manager or DatabaseManager()
-        self.is_client = insightsentry_client or InsightSentryClient()
+
+        # Store client reference or None (will be initialized in start())
+        self._provided_client = insightsentry_client
+        self.is_client: Optional[InsightSentryClient] = None
+        self._client_stack: Optional[AsyncExitStack] = None
 
         # Data persistence manager
         self.persistence = DataPersistenceManager(self.db)
@@ -113,6 +118,19 @@ class NewsGatingService:
         self.running = True
         await self.db.initialize()
 
+        # Initialize InsightSentry client with async context manager
+        if not self._provided_client:
+            # Create new client and manage its lifecycle
+            self._client_stack = AsyncExitStack()
+            self.is_client = await self._client_stack.enter_async_context(
+                InsightSentryClient()
+            )
+            logger.info("✅ InsightSentry client initialized")
+        else:
+            # Use provided client (assume caller manages lifecycle)
+            self.is_client = self._provided_client
+            logger.info("✅ Using provided InsightSentry client")
+
         logger.info("🚦 News Gating Service started")
 
         try:
@@ -128,6 +146,14 @@ class NewsGatingService:
     async def stop(self):
         """Stop the gating service."""
         self.running = False
+
+        # Clean up InsightSentry client if we created it
+        if self._client_stack:
+            await self._client_stack.aclose()
+            self._client_stack = None
+            self.is_client = None
+            logger.info("✅ InsightSentry client closed")
+
         await self.db.close()
         logger.info("🚦 News Gating Service stopped")
 

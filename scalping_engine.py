@@ -90,9 +90,20 @@ class ScalpingEngine:
         self.config.validate()
 
         # Initialize IG client for live trading
+        self.account_currency = None
         if ig_client:
             self.ig_client = ig_client
             print("✅ Using provided IG client")
+            # Try to get account currency
+            try:
+                account_info = self.ig_client.get_account()
+                accounts = account_info.get("accounts", [])
+                if accounts:
+                    self.account_currency = accounts[0].get("currency", "GBP")
+                    print(f"   Account currency: {self.account_currency}")
+            except Exception as e:
+                print(f"⚠️  Could not fetch account currency: {e}")
+                self.account_currency = "GBP"  # Default fallback
         else:
             # Initialize from environment variables
             api_key = os.getenv("IG_API_KEY")
@@ -109,6 +120,18 @@ class ScalpingEngine:
                     self.ig_client.create_session(username=username, password=password)
                     mode = "DEMO" if is_demo else "LIVE"
                     print(f"✅ Logged into IG Markets ({mode} mode)")
+
+                    # Fetch account currency
+                    try:
+                        account_info = self.ig_client.get_account()
+                        accounts = account_info.get("accounts", [])
+                        if accounts:
+                            self.account_currency = accounts[0].get("currency", "GBP")
+                            print(f"   Account currency: {self.account_currency}")
+                    except Exception as e:
+                        print(f"⚠️  Could not fetch account currency: {e}")
+                        self.account_currency = "GBP"  # Default fallback
+
                 except Exception as e:
                     print(f"⚠️  Failed to login to IG: {e}")
                     print("⚠️  Trading will be paper-only mode")
@@ -699,6 +722,7 @@ class ScalpingEngine:
 
                 print(f"   TP Distance: {limit_pips:.1f} pips")
                 print(f"   SL Distance: {stop_pips:.1f} pips")
+                print(f"   Currency: {self.account_currency or 'GBP'}")
 
                 # Create position on IG
                 response = self.ig_client.create_position(
@@ -710,6 +734,7 @@ class ScalpingEngine:
                     stop_distance=stop_pips,
                     guaranteed_stop=False,  # Must be explicitly False (not None)
                     force_open=True,
+                    currency_code=self.account_currency or "GBP",  # Required by IG API
                     deal_reference=trade_id
                 )
 
