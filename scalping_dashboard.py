@@ -870,14 +870,41 @@ with tab2:
                 events_by_date = defaultdict(list)
                 cutoff_date = datetime.utcnow() + timedelta(days=days_ahead)
 
+                # Debug: Show filtering info
+                st.info(f"📊 Showing {len(filtered_events)} events (from {len(events)} total)")
+
+                parsing_errors = 0
+                filtered_out = 0
+
                 for event in filtered_events:
                     try:
-                        event_date = datetime.fromisoformat(event.get('date', '').replace('Z', '+00:00'))
+                        # Parse date with milliseconds support
+                        date_str = event.get('date', '')
+                        if not date_str:
+                            parsing_errors += 1
+                            continue
+
+                        # Handle both formats: with and without milliseconds
+                        date_str = date_str.replace('Z', '+00:00')
+                        event_date = datetime.fromisoformat(date_str)
+
                         if event_date <= cutoff_date:
                             date_key = event_date.strftime('%Y-%m-%d')
                             events_by_date[date_key].append(event)
-                    except:
-                        pass
+                        else:
+                            filtered_out += 1
+                    except Exception as e:
+                        parsing_errors += 1
+                        st.warning(f"⚠️ Failed to parse event date: {event.get('title', 'Unknown')} - {event.get('date', 'N/A')} - Error: {e}")
+
+                # Show filtering stats
+                if parsing_errors > 0:
+                    st.warning(f"⚠️ {parsing_errors} events had parsing errors")
+                if filtered_out > 0:
+                    st.info(f"🔍 {filtered_out} events filtered out by date range")
+
+                total_displayed = sum(len(events) for events in events_by_date.values())
+                st.success(f"✅ Displaying {total_displayed} events")
 
                 # Display calendar
                 st.markdown("---")
