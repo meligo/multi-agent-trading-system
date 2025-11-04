@@ -5,6 +5,7 @@ Main orchestration engine for fast momentum scalping.
 Implements all critical scalping requirements from SCALPING_STRATEGY_ANALYSIS.md
 """
 
+import os
 import time
 import threading
 from datetime import datetime, timedelta, time as dt_time
@@ -13,6 +14,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import pandas as pd
+from dotenv import load_dotenv
 
 from scalping_config import ScalpingConfig
 from scalping_indicators import ScalpingIndicators
@@ -26,6 +28,11 @@ from scalping_agents import (
     ConservativeRiskAgent,
     RiskManager
 )
+from ig_client import IGClient
+
+# Load environment variables
+env_path = Path(__file__).parent / '.env.scalper'
+load_dotenv(dotenv_path=env_path)
 
 
 @dataclass
@@ -40,6 +47,7 @@ class ActiveTrade:
     entry_time: datetime
     position_size: float
     spread_at_entry: float
+    deal_id: Optional[str] = None  # IG deal ID for closing position
     status: str = "OPEN"  # OPEN, CLOSED, EXPIRED
     exit_price: Optional[float] = None
     exit_time: Optional[datetime] = None
@@ -74,12 +82,41 @@ class ScalpingEngine:
     5. Tracks daily limits and risk controls
     """
 
-    def __init__(self, config: ScalpingConfig = None):
+    def __init__(self, config: ScalpingConfig = None, ig_client: Optional[IGClient] = None):
         """Initialize the scalping engine."""
         self.config = config or ScalpingConfig()
 
         # Validate config
         self.config.validate()
+
+        # Initialize IG client for live trading
+        if ig_client:
+            self.ig_client = ig_client
+            print("✅ Using provided IG client")
+        else:
+            # Initialize from environment variables
+            api_key = os.getenv("IG_API_KEY")
+            username = os.getenv("IG_USERNAME")
+            password = os.getenv("IG_PASSWORD")
+            is_demo = os.getenv("IG_DEMO", "true").lower() == "true"
+
+            if api_key and username and password:
+                base_url = "https://demo-api.ig.com/gateway/deal" if is_demo else "https://api.ig.com/gateway/deal"
+                self.ig_client = IGClient(api_key=api_key, base_url=base_url)
+
+                # Login
+                try:
+                    self.ig_client.create_session(username=username, password=password)
+                    mode = "DEMO" if is_demo else "LIVE"
+                    print(f"✅ Logged into IG Markets ({mode} mode)")
+                except Exception as e:
+                    print(f"⚠️  Failed to login to IG: {e}")
+                    print("⚠️  Trading will be paper-only mode")
+                    self.ig_client = None
+            else:
+                print("⚠️  IG credentials not found in .env.scalper")
+                print("⚠️  Trading will be paper-only mode")
+                self.ig_client = None
 
         # Initialize agents
         print("Initializing scalping agents...")
@@ -637,6 +674,45 @@ class ScalpingEngine:
         # Generate trade ID
         trade_id = f"{scalp_setup.pair}_{datetime.now().strftime('%H%M%S')}"
 
+        # Get IG epic code
+        epic = self.config.IG_EPIC_MAP.get(scalp_setup.pair)
+        if not epic:
+            print(f"⚠️  No IG epic found for {scalp_setup.pair}")
+            return False
+
+        deal_id = None
+
+        # Execute on IG if client is available
+        if self.ig_client:
+            try:
+                print(f"\n📤 Sending order to IG Markets...")
+                print(f"   Epic: {epic}")
+                print(f"   Direction: {scalp_setup.direction}")
+                print(f"   Size: {position_size} lots")
+
+                # Create position on IG
+                response = self.ig_client.create_position(
+                    epic=epic,
+                    direction=scalp_setup.direction,
+                    size=position_size,
+                    order_type="MARKET",
+                    limit_distance=abs(scalp_setup.take_profit - scalp_setup.entry_price) * 10000,  # Convert to pips
+                    stop_distance=abs(scalp_setup.entry_price - scalp_setup.stop_loss) * 10000,  # Convert to pips
+                    force_open=True,
+                    deal_reference=trade_id
+                )
+
+                deal_id = response.get("dealReference") or response.get("dealId")
+                print(f"✅ IG Order Accepted!")
+                print(f"   Deal ID: {deal_id}")
+
+            except Exception as e:
+                print(f"❌ IG Order Failed: {e}")
+                print(f"⚠️  Falling back to paper trading")
+                deal_id = None
+        else:
+            print(f"\n📝 Paper Trading Mode (No IG client)")
+
         # Create active trade record
         trade = ActiveTrade(
             trade_id=trade_id,
@@ -647,7 +723,8 @@ class ScalpingEngine:
             stop_loss=scalp_setup.stop_loss,
             entry_time=datetime.now(),
             position_size=position_size,
-            spread_at_entry=scalp_setup.spread
+            spread_at_entry=scalp_setup.spread,
+            deal_id=deal_id  # Store IG deal ID
         )
 
         # Store trade
@@ -657,10 +734,13 @@ class ScalpingEngine:
         self.daily_stats.trades_taken += 1
         self.daily_stats.last_trade_time = datetime.now()
 
-        print(f"\n✅ TRADE EXECUTED: {trade_id}")
+        mode = "LIVE" if deal_id else "PAPER"
+        print(f"\n✅ TRADE EXECUTED ({mode}): {trade_id}")
         print(f"   {trade.direction} {trade.pair} @ {trade.entry_price:.5f}")
         print(f"   TP: {trade.take_profit:.5f} | SL: {trade.stop_loss:.5f}")
         print(f"   Size: {trade.position_size:.2f} lots")
+        if deal_id:
+            print(f"   IG Deal ID: {deal_id}")
         print(f"   Max Duration: {self.config.MAX_TRADE_DURATION_MINUTES} minutes")
 
         return True
@@ -724,6 +804,30 @@ class ScalpingEngine:
             return
 
         trade = self.active_trades[trade_id]
+
+        # Close on IG if we have a deal_id
+        if trade.deal_id and self.ig_client:
+            try:
+                print(f"\n📤 Closing position on IG Markets...")
+                print(f"   Deal ID: {trade.deal_id}")
+                print(f"   Reason: {reason}")
+
+                # Close the position (use opposite direction)
+                close_direction = "SELL" if trade.direction == "BUY" else "BUY"
+
+                response = self.ig_client.close_position(
+                    deal_id=trade.deal_id,
+                    size=trade.position_size,
+                    direction=close_direction,
+                    order_type="MARKET"
+                )
+
+                print(f"✅ IG Position Closed!")
+                print(f"   Deal Reference: {response.get('dealReference')}")
+
+            except Exception as e:
+                print(f"⚠️  IG close failed: {e}")
+                print(f"   (Trade will still be closed locally)")
 
         # Get exit price
         if exit_price is None:
