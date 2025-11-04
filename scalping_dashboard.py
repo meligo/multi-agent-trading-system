@@ -824,13 +824,16 @@ with tab2:
 
     if 'is_client' in st.session_state and st.session_state.is_client:
         try:
+            # Helper function to properly use async context manager
+            async def fetch_calendar():
+                async with InsightSentryClient() as client:
+                    return await client.get_economic_calendar(
+                        countries=["US", "EU", "GB", "JP"],
+                        min_impact="high"
+                    )
+
             # Fetch events for next 2 weeks
-            events = asyncio.run(
-                st.session_state.is_client.get_economic_calendar(
-                    countries=["US", "EU", "GB", "JP"],
-                    min_impact="high"
-                )
-            )
+            events = asyncio.run(fetch_calendar())
 
             if events:
                 st.success(f"✅ Found {len(events)} high-impact events")

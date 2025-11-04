@@ -67,13 +67,17 @@ class InsightSentryClient:
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self.session = aiohttp.ClientSession(headers=self.headers)
+        if not self.session:
+            # Create session with built-in timeout (avoids asyncio.timeout() issues)
+            timeout = aiohttp.ClientTimeout(total=10, connect=3, sock_read=7)
+            self.session = aiohttp.ClientSession(headers=self.headers, timeout=timeout)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         if self.session:
             await self.session.close()
+            self.session = None
 
     async def _request(
         self,
@@ -89,14 +93,22 @@ class InsightSentryClient:
 
         Returns:
             JSON response
+
+        Raises:
+            RuntimeError: If client is not used as async context manager
         """
         if not self.session:
-            self.session = aiohttp.ClientSession(headers=self.headers)
+            raise RuntimeError(
+                "InsightSentryClient must be used as async context manager:\n"
+                "  async with InsightSentryClient() as client:\n"
+                "      events = await client.get_economic_calendar()"
+            )
 
         url = f"{self.BASE_URL}{endpoint}"
 
         try:
-            async with self.session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            # Session already has timeout configured in __aenter__
+            async with self.session.get(url, params=params) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
                 logger.debug(f"GET {endpoint} -> {resp.status}")
