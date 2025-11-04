@@ -40,6 +40,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress noisy trading_ig logs (only show warnings/errors)
+logging.getLogger("trading_ig.streamer.manager").setLevel(logging.WARNING)
+logging.getLogger("trading_ig.lightstreamer").setLevel(logging.WARNING)
+
 
 class ModernWebSocketCollector:
     """

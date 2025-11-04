@@ -117,6 +117,10 @@ def setup_all_logging(console_output: bool = False):
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("websocket").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("trading_ig.streamer.manager").setLevel(logging.WARNING)  # Suppress "Waiting for ticker"
+    logging.getLogger("trading_ig.lightstreamer").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
 
     print(f"✅ Logging configured - logs directory: {LOGS_DIR}")
 
