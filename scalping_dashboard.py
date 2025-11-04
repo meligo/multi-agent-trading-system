@@ -864,11 +864,12 @@ with tab2:
                     filtered_events = [e for e in filtered_events if e.get('type') in type_filter]
 
                 # Group by date
-                from datetime import datetime, timedelta
+                from datetime import datetime, timedelta, timezone
                 from collections import defaultdict
 
                 events_by_date = defaultdict(list)
-                cutoff_date = datetime.utcnow() + timedelta(days=days_ahead)
+                # Use timezone-aware datetime to match API response format
+                cutoff_date = datetime.now(timezone.utc) + timedelta(days=days_ahead)
 
                 # Debug: Show filtering info
                 st.info(f"📊 Showing {len(filtered_events)} events (from {len(events)} total)")
@@ -913,8 +914,10 @@ with tab2:
                     date_obj = datetime.strptime(date_str, '%Y-%m-%d')
                     day_name = date_obj.strftime('%A')
 
-                    # Date header with day count
-                    days_until = (date_obj - datetime.utcnow()).days
+                    # Date header with day count (compare dates only, not times)
+                    today = datetime.now(timezone.utc).date()
+                    event_date = date_obj.date()
+                    days_until = (event_date - today).days
                     if days_until == 0:
                         date_label = f"🔴 TODAY - {day_name}, {date_obj.strftime('%B %d, %Y')}"
                     elif days_until == 1:
