@@ -3,10 +3,10 @@
 
 [server]
 # Port number to run on (default: 8501)
-port = 8501
+port = 8505
 
-# Enable CORS for external access
-enableCORS = false
+# Enable CORS (required for CSRF protection)
+enableCORS = true
 
 # Disable file watcher for better performance in production
 runOnSave = false
@@ -18,7 +18,7 @@ address = "0.0.0.0"
 # Automatically open browser on start
 gatherUsageStats = false
 serverAddress = "localhost"
-serverPort = 8501
+serverPort = 8505
 
 [theme]
 # Custom theme (optional)
