@@ -10,11 +10,19 @@ Implements safety mechanisms to prevent over-trading.
 """
 
 import time
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from forex_agents import ForexTradingSystem
 from forex_sentiment import ForexSentimentAnalyzer
 from claude_validator import ClaudeValidator
+
+# Set up logger for trend-change exits
+logger = logging.getLogger(__name__)
+
+# Set up separate logger for trend-change exits (special log file)
+trend_exit_logger = logging.getLogger('trend_exits')
+trend_exit_logger.setLevel(logging.INFO)
 
 
 class PositionMonitor:
@@ -65,6 +73,42 @@ class PositionMonitor:
         self.reversal_count = {}  # pair -> count (resets daily)
         self.last_reversal = {}  # pair -> datetime
         self.reversal_history = []  # List of reversal events
+
+        # Set up trend-change exit logging to separate file
+        self._setup_trend_exit_logging()
+
+    def _setup_trend_exit_logging(self):
+        """Set up separate log file for trend-change exits."""
+        import os
+
+        # Create logs directory if it doesn't exist
+        logs_dir = 'logs'
+        os.makedirs(logs_dir, exist_ok=True)
+
+        # Configure trend exit logger with file handler
+        if not trend_exit_logger.handlers:
+            # Create file handler
+            log_file = os.path.join(logs_dir, 'trend_exits.log')
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setLevel(logging.INFO)
+
+            # Create formatter
+            formatter = logging.Formatter(
+                '%(asctime)s - %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            file_handler.setFormatter(formatter)
+
+            # Add handler to logger
+            trend_exit_logger.addHandler(file_handler)
+
+            # Also add console handler for visibility
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+            console_handler.setFormatter(formatter)
+            trend_exit_logger.addHandler(console_handler)
+
+            logger.info(f"✅ Trend-change exit logging configured: {log_file}")
 
     def check_position_reversal(
         self,
@@ -149,6 +193,16 @@ class PositionMonitor:
 
             # Signal reversed - check confidence
             if new_confidence < self.reversal_confidence_threshold:
+                # Log trend-change exit (position closed before SL/TP due to trend reversal)
+                trend_exit_logger.info(
+                    f"🔄 TREND-CHANGE EXIT: {pair} | "
+                    f"Direction: {current_signal} → {new_signal} | "
+                    f"Entry: {current_position.get('entry_price', 'N/A')} | "
+                    f"Current: {current_price:.5f} | "
+                    f"New Confidence: {new_confidence:.1%} | "
+                    f"Reason: Signal reversed but confidence too low (threshold: {self.reversal_confidence_threshold:.1%})"
+                )
+
                 return {
                     'action': 'CLOSE',
                     'new_signal': new_signal,

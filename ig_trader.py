@@ -10,6 +10,7 @@ from datetime import datetime
 from trading_ig import IGService
 from forex_config import ForexConfig
 from ig_rate_limiter import get_rate_limiter
+from ig_token_auto_refresh import auto_refresh_token
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ class IGTrader:
         clean_pair = pair.replace("_", "")
         return f"CS.D.{clean_pair}.TODAY.IP"
 
+    @auto_refresh_token(max_retries=3, retry_delay=2)
     def open_position(self, pair: str, direction: str, size: float,
                       stop_loss_pips: Optional[float] = None,
                       take_profit_pips: Optional[float] = None) -> Dict:
@@ -216,6 +218,7 @@ class IGTrader:
                 'direction': direction
             }
 
+    @auto_refresh_token(max_retries=3, retry_delay=2)
     def close_position(self, deal_id: str, size: Optional[float] = None) -> Dict:
         """
         Close an open position.
@@ -253,6 +256,7 @@ class IGTrader:
                 'deal_id': deal_id
             }
 
+    @auto_refresh_token(max_retries=3, retry_delay=2)
     def get_open_positions(self) -> List[Dict]:
         """
         Get all open positions.
@@ -318,6 +322,7 @@ class IGTrader:
                 return pair
         return epic
 
+    @auto_refresh_token(max_retries=3, retry_delay=2)
     def get_account_info(self) -> Dict:
         """
         Get account information.
