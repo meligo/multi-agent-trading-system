@@ -38,6 +38,7 @@ from scalping_agents import (
     RiskManager
 )
 from ig_client import IGClient
+from ig_token_refresh import auto_refresh_ig_token
 
 # Load environment variables
 env_path = Path(__file__).parent / '.env.scalper'
@@ -958,6 +959,7 @@ class ScalpingEngine:
     # TRADE EXECUTION & MONITORING
     # ========================================================================
 
+    @auto_refresh_ig_token(max_retries=3, retry_delay=2)
     def execute_trade(self, scalp_setup: ScalpSetup, position_size: float) -> bool:
         """
         Execute a scalp trade.
@@ -1109,6 +1111,7 @@ class ScalpingEngine:
                 logger.error(f"❌ Error in trade monitor: {e}")
                 time.sleep(5)
 
+    @auto_refresh_ig_token(max_retries=3, retry_delay=2)
     def close_trade(self, trade_id: str, reason: str, exit_price: Optional[float] = None):
         """Close an active trade and update stats."""
         if trade_id not in self.active_trades:
